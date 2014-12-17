@@ -11,17 +11,19 @@ MV				:= mv -f
 RM				:= rm -f
 
 # flags
-INCLUDE_CFLAGS	= -I./ -I./include/
+INCLUDE_CFLAGS	= -I./ -I./include/ -I/target/include/
 CONFIG_CFLAGS	= -g -O2 -march=core2
 CFLAGS			+= $(INCLUDE_CFLAGS) -Wall -fPIC $(CONFIG_CFLAGS)
-LDFLAGS			+= -lm -lc
+LDFLAGS			+= -lm -lc -lliquid
 ARFLAGS			= r
 
 library_src		:=			\
   src/test/copy.cc			\
+  src/mimo/framegen.cc		\
 
 library_hdr		:=			\
   include/test.h			\
+  include/mimo.h			\
 
 library_objs	= $(patsubst %.cc, %.o, $(library_src))
 
