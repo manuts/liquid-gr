@@ -14,16 +14,20 @@ RM				:= rm -f
 INCLUDE_CFLAGS	= -I./ -I./include/ -I/target/include/
 CONFIG_CFLAGS	= -g -O2 -march=core2
 CFLAGS			+= $(INCLUDE_CFLAGS) -Wall -fPIC $(CONFIG_CFLAGS)
+LDFLAGS			= -L/target/lib -L/target/lib64
 LDFLAGS			+= -lm -lc -lliquid
 ARFLAGS			= r
 
-library_src		:=			\
-  src/test/copy.cc			\
+library_src		:=					\
+  src/test/copy.cc				\
   src/mimo/framegen.cc		\
+  src/mimo/framesync.cc		\
+  src/math/liquid_math.cc	\
 
-library_hdr		:=			\
-  include/test.h			\
-  include/mimo.h			\
+library_hdr		:=					\
+  include/test.h					\
+  include/mimo.h					\
+  include/liquid_math.h		\
 
 library_objs	= $(patsubst %.cc, %.o, $(library_src))
 
@@ -69,7 +73,7 @@ install			:
 
 uninstall:
 	@echo "uninstalling..."
-	$(RM) $(addprefix $(prefix)/include/liquid/, $(headers_install))
+	$(RM) $(addprefix $(prefix)/include/liquid/, $(library_hdr))
 	$(RM) $(prefix)/lib/libliquidgr.a
 	$(RM) $(prefix)/lib/libliquidgr.so
 	@echo "done."
