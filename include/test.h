@@ -1,3 +1,6 @@
+#ifndef TEST_H
+#define TEST_H
+
 namespace liquid {
   namespace test {
     class copy
@@ -10,3 +13,5 @@ namespace liquid {
     };
   }
 }
+
+#endif
