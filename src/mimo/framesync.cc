@@ -261,7 +261,7 @@ namespace liquid {
           }
           else if(state == STATE_DETECTFRAME2)
           {
-            break;
+            return;
           }
         }
       }
@@ -365,8 +365,6 @@ namespace liquid {
 
     void framesync::syncpn1()
     {
-      if(PRINT_ALL)
-        printf("execute syncpn1\n");
       // estimate residual carrier frequency offset from p/n symbols
       std::complex<float> dphi_metric = 0.0f;
       std::complex<float> r0 = 0.0f;
@@ -404,8 +402,6 @@ namespace liquid {
 
     void framesync::execute_seekpn2(std::complex<float> _x)
     {
-      if(PRINT_ALL)
-        printf("execute seekpn2\n");
       // push sample into pre-demod p/n sequence buffer
       windowcf_push(buffer2, _x);
 
@@ -431,8 +427,6 @@ namespace liquid {
     // push buffered p/n sequence through synchronizer
     void framesync::pushpn2()
     {
-      if(PRINT_ALL)
-        printf("execute pushpn2\n");
       // reset filterbanks
       firpfb_crcf_reset(mf2);
       firpfb_crcf_reset(dmf2);
@@ -471,20 +465,27 @@ namespace liquid {
         }
         else {
             // run remaining samples through p/n sequence recovery
-          execute_rxpn2(rc[i]);
-        }
+          if(state == STATE_DETECTFRAME2)
+          {
+            state = STATE_RXPN2;
+            execute_rxpn1(rc[i]);
+          }
+          else if(state == STATE_RXPN2)
+          {
+            execute_rxpn2(rc[i]);
+          }
+          else if(state == STATE_DETECTFRAME1)
+          {
+            return;
+          }
       }
     }
 
     void framesync::execute_rxpn2(std::complex<float> _x)
     {
-      if(PRINT_ALL)
-        printf("execute rxpn2\n");
-      // validate input
       if(pn2_counter == seq_len)
       {
-        if(PRINT_ALL)
-          fprintf(stderr, "Buff Full\n");
+        fprintf(stderr, "Buff2 Full\n");
         return;
       }
 
@@ -499,8 +500,6 @@ namespace liquid {
 
       // compute output if timeout
       if (sample_available) {
-        if(PRINT_ALL)
-          printf("PN 2 sample %u available,\n", pn2_counter);
         // save output in p/n symbols buffer
         preamble_rx2[pn2_counter] = mf_out;
 
@@ -508,9 +507,10 @@ namespace liquid {
         pn2_counter++;
 
         if (pn2_counter == seq_len) {
+          syncpn2();
+          state = STATE_DETECTFRAME1;
           frame2_count++;
-            syncpn2();
-            reset();
+          reset2();
         }
       }
     }
@@ -518,8 +518,6 @@ namespace liquid {
     int framesync::update_symsync2(std::complex<float>   _x,
                            std::complex<float> * _y)
     {
-      if(PRINT_ALL)
-        printf("execute update symsync2\n");
       // push sample into filterbanks
       firpfb_crcf_push(mf2,  _x);
       firpfb_crcf_push(dmf2, _x);
@@ -535,7 +533,7 @@ namespace liquid {
         sample_available = 1;
 
         // reset timer
-        pfb_timer2 = 2;  // k samples/symbol
+        pfb_timer2 = k;  // k samples/symbol
 
         firpfb_crcf_execute(mf2, pfb_index2, &mf_out);
         firpfb_crcf_execute(dmf2, pfb_index2, &dmf_out);
@@ -580,8 +578,6 @@ namespace liquid {
 
     void framesync::syncpn2()
     {
-      if(PRINT_ALL)
-        printf("execute syncpn2\n");
       // estimate residual carrier frequency offset from p/n symbols
       std::complex<float> dphi_metric = 0.0f;
       std::complex<float> r0 = 0.0f;
