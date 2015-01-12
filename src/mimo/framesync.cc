@@ -31,6 +31,10 @@ namespace liquid {
       seq_len = (unsigned int)(pow(2, seq_len_exp) - 1);
       msequence ms1 = msequence_create(seq_len_exp, 0x005b, 1);
       msequence ms2 = msequence_create(seq_len_exp, 0x0043, 1);
+      preamble_pn1 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*seq_len); 
+      preamble_pn2 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*seq_len); 
+      preamble_rx1 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*seq_len); 
+      preamble_rx2 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*seq_len); 
       for (unsigned int i = 0; i < seq_len; i++){
         preamble_pn1[i] = (msequence_advance(ms1)) ? 1.0f : -1.0f;
         preamble_pn2[i] = (msequence_advance(ms2)) ? 1.0f : -1.0f;
@@ -143,6 +147,10 @@ namespace liquid {
     framesync::~framesync()
     {
       // destroy synchronization objects
+      free(preamble_pn1);
+      free(preamble_pn2);
+      free(preamble_rx1);
+      free(preamble_rx2);
       detector_cccf_destroy(frame1_detector);  // frame detector
       detector_cccf_destroy(frame2_detector);  // frame detector
       windowcf_destroy(buffer1);               // p/n sample buffer
@@ -478,6 +486,7 @@ namespace liquid {
           {
             return;
           }
+        }
       }
     }
 

@@ -98,10 +98,10 @@ namespace liquid {
         std::complex<float> symsync_out2;// symbol synchronizer output
         
         // preamble
-        std::complex<float> preamble_pn1[64];  // known 64-symbol p/n sequence
-        std::complex<float> preamble_rx1[64];  // received p/n symbols
-        std::complex<float> preamble_pn2[64];  // known 64-symbol p/n sequence
-        std::complex<float> preamble_rx2[64];  // received p/n symbols
+        std::complex<float> * preamble_pn1;  // known 64-symbol p/n sequence
+        std::complex<float> * preamble_rx1;  // received p/n symbols
+        std::complex<float> * preamble_pn2;  // known 64-symbol p/n sequence
+        std::complex<float> * preamble_rx2;  // received p/n symbols
         
         // status variables
         enum {
@@ -141,7 +141,8 @@ namespace liquid {
         framesync(framesync_callback, void *, unsigned int,
                   unsigned int, float);
         ~framesync();
-        void reset();
+        void reset1();
+        void reset2();
         void work(std::complex<float> *, unsigned int);
         unsigned long int get_frame1_count();
         unsigned long int get_frame2_count();
