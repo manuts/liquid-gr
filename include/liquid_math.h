@@ -25,6 +25,7 @@
 namespace liquid {
   namespace math {
     const std::complex<float> I(0.0, 1.0);
+    const std::complex<float> Z(0.0, 0.0);
     std::complex<float> cexpjf(float theta);
   }
 }
