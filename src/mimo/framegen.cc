@@ -19,32 +19,92 @@
 
 namespace liquid {
   namespace mimo {
-    framegen::framegen() {
-      pn_len_exp = 7;
-      pn_len = (unsigned int)(pow(2, pn_len_exp)) - 1;
-      pn1 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*pn_len);
-      pn2 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*pn_len);
-      ms1 = msequence_create(pn_len_exp, 0x0089, 1);
-      ms2 = msequence_create(pn_len_exp, 0x00FD, 1);
+    framegen::framegen(unsigned int _k,
+                       unsigned int _m,
+                       float _beta,
+                       float _gain) {
+      seq_len_exp = 6;
+      seq_len = (unsigned int)(pow(2, seq_len_exp)) - 1;
+      pn1 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*seq_len);
+      pn2 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*seq_len);
+      msequence ms1 = msequence_create(seq_len_exp, 0x005b, 1);
+      msequence ms2 = msequence_create(seq_len_exp, 0x0043, 1);
+      for (unsigned int i = 0; i < seq_len; i++){
+        pn1[i] = (msequence_advance(ms1)) ? 1.0f : -1.0f;
+        pn2[i] = (msequence_advance(ms2)) ? 1.0f : -1.0f;
+      }
+      msequence_destroy(ms1);
+      msequence_destroy(ms2);
+      k = _k;
+      m = _m;
+      beta = _beta;
+      gain = _gain;
+      interp = firinterp_crcf_create_rnyquist(LIQUID_FIRFILT_ARKAISER,k,m,beta,0);
+
+      reset();
     }
+
     unsigned int framegen::get_pn_len() {
-      return pn_len;
+      return seq_len;
     }
+
     framegen::~framegen() {
       free(pn1);
       free(pn2);
-      msequence_destroy(ms1);
-      msequence_destroy(ms2);
+      firinterp_crcf_destroy(interp);
     }
-    void framegen::work(std::complex<float> * chan1_symb,
-                        std::complex<float> * chan2_symb,
-                        unsigned int num_output)
+
+    unsigned int framegen::work(std::vector<std::complex<float>*> tx_sig,
+                                unsigned int num_output)
     {
-      for(unsigned int i = 0; i < num_output; i++)
+      unsigned int count = 0;
+      std::complex<float> * samps = 
+        (std::complex<float> *)malloc(sizeof(std::complex<float>)*k);
+      while(count + k < num_output)
       {
-        chan1_symb[i] = (msequence_advance(ms1) ? 1.0f : -1.0f);
-        chan2_symb[i] = (msequence_advance(ms2) ? 1.0f : -1.0f);
+        switch(state) {
+          case(STATE_TXPN1):
+            firinterp_crcf_execute(interp, pn1[pn_count], samps);
+            break;
+          case(STATE_TXPN2):
+            firinterp_crcf_execute(interp, pn2[pn_count], samps);
+            break;
+        }
+        pn_count += 1;
+        for(unsigned int sps_count = 0; sps_count < k; sps_count++)
+        {
+          tx_sig[0][count] = gain*(samps[sps_count].real()) + liquid::math::Z;
+          tx_sig[1][count] = liquid::math::Z + liquid::math::I*(gain*(samps[sps_count].imag()));
+          count++;
+        }
+        if(pn_count == seq_len)
+        {
+          switch(state) {
+            case(STATE_TXPN1):
+              state = STATE_TXPN2;
+              break;
+            case(STATE_TXPN2):
+              frame_count += 1;
+              state = STATE_TXPN1;
+              break;
+          }
+          pn_count = 0;
+        }
       }
+      free(samps);
+      return count;
+    }
+
+    void framegen::reset() {
+      frame_count = 0;
+      pn_count = 0;
+      state = STATE_TXPN1;
+      firinterp_crcf_reset(interp);
+    }
+
+    unsigned int framegen::get_num_frames()
+    {
+      return frame_count;
     }
   }
 }

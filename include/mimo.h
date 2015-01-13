@@ -21,6 +21,7 @@
 #include <math.h>
 #include <assert.h>
 #include <complex>
+#include <vector>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -33,17 +34,29 @@ namespace liquid {
     class framegen
     {
       private:
-        msequence ms1;
-        msequence ms2;
-        unsigned int pn_len_exp;
-        unsigned int pn_len;
+        unsigned int seq_len_exp;
+        unsigned int seq_len;
+        unsigned int frame_count;
+        unsigned int pn_count;
         std::complex<float> * pn1;
         std::complex<float> * pn2;
+        firinterp_crcf interp;
+        unsigned int k;
+        unsigned int m;
+        float beta;
+        float gain;
+
+        enum {
+            STATE_TXPN1 = 0,
+            STATE_TXPN2,
+        } state;
       public:
-        framegen();
+        framegen(unsigned int, unsigned int, float, float);
         ~framegen();
+        void reset();
         unsigned int get_pn_len();
-        void work(std::complex<float> *, std::complex<float> *, unsigned int num_output);
+        unsigned int get_num_frames();
+        unsigned int work(std::vector<std::complex<float>*>, unsigned int num_output);
     };
 
     class framesync
