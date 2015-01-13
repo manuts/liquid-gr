@@ -181,6 +181,10 @@ namespace liquid {
         void syncpn2();
         void syncpn3();
 
+        FILE * f_pn1;
+        FILE * f_pn2;
+        FILE * f_pn3;
+
       public:
         framesync(framesync_callback, void *, unsigned int,
                   unsigned int, float);
