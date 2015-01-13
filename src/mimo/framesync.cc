@@ -14,7 +14,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this software.  If not, see <http://www.gnu.org/licenses/>.
  */
-#define PRINT_ALL 0
+#define __SAVE__ 1
 #include "mimo.h"
 
 namespace liquid {
@@ -114,6 +114,12 @@ namespace liquid {
       reset1();
       reset2();
       reset3();
+
+      if(__SAVE__){
+        f_pn1 = fopen("/tmp/rx_pn1", "wb");
+        f_pn2 = fopen("/tmp/rx_pn2", "wb");
+        f_pn3 = fopen("/tmp/rx_pn3", "wb");
+      }
     }
 
     void framesync::reset1()
@@ -187,6 +193,11 @@ namespace liquid {
 
     framesync::~framesync()
     {
+      if(__SAVE__){
+        fclose(f_pn1);
+        fclose(f_pn2);
+        fclose(f_pn3);
+      }
       // destroy synchronization objects
       free(preamble_pn1);
       free(preamble_pn2);
@@ -362,6 +373,8 @@ namespace liquid {
           syncpn1();
           state = STATE_DETECTFRAME2;
           frame1_count++;
+          if(__SAVE__)
+            fwrite((void *)preamble_rx1, sizeof(std::complex<float>), seq_len, f_pn1);
           reset1();
         }
       }
@@ -479,7 +492,7 @@ namespace liquid {
 
       // check if frame has been detected
       if (detected) {
-        printf("***** frame2 detected! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB***\n",
+        printf("***** frame2 detected! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
                tau_hat2, dphi_hat2, 20*log10f(gamma_hat2));
 
         // push buffered samples through synchronizer
@@ -576,6 +589,8 @@ namespace liquid {
           syncpn2();
           state = STATE_DETECTFRAME3;
           frame2_count++;
+          if(__SAVE__)
+            fwrite((void *)preamble_rx2, sizeof(std::complex<float>), seq_len, f_pn2);
           reset2();
         }
       }
@@ -791,6 +806,8 @@ namespace liquid {
           syncpn3();
           state = STATE_DETECTFRAME1;
           frame3_count++;
+          if(__SAVE__)
+            fwrite((void *)preamble_rx3, sizeof(std::complex<float>), seq_len, f_pn3);
           reset3();
         }
       }
