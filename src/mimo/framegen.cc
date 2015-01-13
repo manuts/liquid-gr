@@ -15,6 +15,7 @@
  * along with this software.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#define __SAVE__ 0
 #include "mimo.h"
 
 namespace liquid {
@@ -42,6 +43,22 @@ namespace liquid {
       interp = firinterp_crcf_create_rnyquist(LIQUID_FIRFILT_ARKAISER,k,m,beta,0);
       sps = (std::complex<float> *)malloc(sizeof(std::complex<float>)*k);
 
+      if(__SAVE__){
+        std::complex<float> z;
+        FILE * f_pn1;
+        FILE * f_pn2;
+        FILE * f_pn3;
+        f_pn1 = fopen("/tmp/tx_pn1", "wb");
+        f_pn2 = fopen("/tmp/tx_pn2", "wb");
+        f_pn3 = fopen("/tmp/tx_pn3", "wb");
+        for(unsigned int i = 0; i < seq_len; i++){
+          fwrite((void *)(pn1 + i), sizeof(std::complex<float>), 1, f_pn1);
+          fwrite((void *)(pn2 + i), sizeof(std::complex<float>), 1, f_pn2);
+          z = pn1[i] + liquid::math::I*pn2[i];
+          fwrite((void *)&z, sizeof(std::complex<float>), 1, f_pn3);
+        }
+        fclose(f_pn3);
+      }
       reset();
     }
 
