@@ -40,6 +40,7 @@ namespace liquid {
       beta = _beta;
       gain = _gain;
       interp = firinterp_crcf_create_rnyquist(LIQUID_FIRFILT_ARKAISER,k,m,beta,0);
+      sps = (std::complex<float> *)malloc(sizeof(std::complex<float>)*k);
 
       reset();
     }
@@ -51,6 +52,7 @@ namespace liquid {
     framegen::~framegen() {
       free(pn1);
       free(pn2);
+      free(sps);
       firinterp_crcf_destroy(interp);
     }
 
@@ -58,40 +60,54 @@ namespace liquid {
                                 unsigned int num_output)
     {
       unsigned int count = 0;
-      std::complex<float> * samps = 
-        (std::complex<float> *)malloc(sizeof(std::complex<float>)*k);
-      while(count + k < num_output)
+      // flush out any remaining samples from the prevous symbol
+      for(; (sps_count < k)
+          && (count < num_output); sps_count++)
+      {
+        tx_sig[0][count] = gain*(sps[sps_count].real()) + liquid::math::Z;
+        tx_sig[1][count] = liquid::math::Z + liquid::math::I*(gain*(sps[sps_count].imag()));
+        count++;
+      }
+      // tx new symbols
+      while(count < num_output)
       {
         switch(state) {
           case(STATE_TXPN1):
-            firinterp_crcf_execute(interp, pn1[pn_count], samps);
+            firinterp_crcf_execute(interp, pn1[pn_count], sps);
             break;
           case(STATE_TXPN2):
-            firinterp_crcf_execute(interp, pn2[pn_count], samps);
+            firinterp_crcf_execute(interp, pn2[pn_count], sps);
+            break;
+          case(STATE_TXPN3):
+            firinterp_crcf_execute(interp, pn1[pn_count] + 
+                liquid::math::I*pn2[pn_count], sps);
             break;
         }
         pn_count += 1;
-        for(unsigned int sps_count = 0; sps_count < k; sps_count++)
+        for(sps_count = 0; (sps_count < k)
+            && (count < num_output); sps_count++)
         {
-          tx_sig[0][count] = gain*(samps[sps_count].real()) + liquid::math::Z;
-          tx_sig[1][count] = liquid::math::Z + liquid::math::I*(gain*(samps[sps_count].imag()));
+          tx_sig[0][count] = gain*(sps[sps_count].real()) + liquid::math::Z;
+          tx_sig[1][count] = liquid::math::Z + liquid::math::I*(gain*(sps[sps_count].imag()));
           count++;
         }
         if(pn_count == seq_len)
         {
+          frame_count += 1;
           switch(state) {
             case(STATE_TXPN1):
               state = STATE_TXPN2;
               break;
             case(STATE_TXPN2):
-              frame_count += 1;
+              state = STATE_TXPN3;
+              break;
+            case(STATE_TXPN3):
               state = STATE_TXPN1;
               break;
           }
           pn_count = 0;
         }
       }
-      free(samps);
       return count;
     }
 
@@ -100,6 +116,7 @@ namespace liquid {
       pn_count = 0;
       state = STATE_TXPN1;
       firinterp_crcf_reset(interp);
+      sps_count = k;
     }
 
     unsigned int framegen::get_num_frames()
