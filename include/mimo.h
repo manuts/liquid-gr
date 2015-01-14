@@ -50,8 +50,11 @@ namespace liquid {
 
         enum {
             STATE_TXPN1 = 0,
+            STATE_PNZ1,
             STATE_TXPN2,
+            STATE_PNZ2,
             STATE_TXPN3,
+            STATE_PNZ3,
         } state;
       public:
         framegen(unsigned int, unsigned int, float, float);

@@ -92,12 +92,21 @@ namespace liquid {
           case(STATE_TXPN1):
             firinterp_crcf_execute(interp, pn1[pn_count], sps);
             break;
+          case(STATE_PNZ1):
+            firinterp_crcf_execute(interp, liquid::math::Z, sps);
+            break;
           case(STATE_TXPN2):
             firinterp_crcf_execute(interp, pn2[pn_count], sps);
+            break;
+          case(STATE_PNZ2):
+            firinterp_crcf_execute(interp, liquid::math::Z, sps);
             break;
           case(STATE_TXPN3):
             firinterp_crcf_execute(interp, pn1[pn_count] + 
                 liquid::math::I*pn2[pn_count], sps);
+            break;
+          case(STATE_PNZ3):
+            firinterp_crcf_execute(interp, liquid::math::Z, sps);
             break;
         }
         pn_count += 1;
@@ -113,12 +122,21 @@ namespace liquid {
           frame_count += 1;
           switch(state) {
             case(STATE_TXPN1):
+              state = STATE_PNZ1;
+              break;
+            case(STATE_PNZ1):
               state = STATE_TXPN2;
               break;
             case(STATE_TXPN2):
+              state = STATE_PNZ2;
+              break;
+            case(STATE_PNZ2):
               state = STATE_TXPN3;
               break;
             case(STATE_TXPN3):
+              state = STATE_PNZ3;
+              break;
+            case(STATE_PNZ3):
               state = STATE_TXPN1;
               break;
           }
