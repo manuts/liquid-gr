@@ -15,7 +15,7 @@
  * along with this software.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#define __SAVE__ 0
+#define __SAVE__ 1
 #include "mimo.h"
 
 namespace liquid {
@@ -52,11 +52,13 @@ namespace liquid {
         f_pn2 = fopen("/tmp/tx_pn2", "wb");
         f_pn3 = fopen("/tmp/tx_pn3", "wb");
         for(unsigned int i = 0; i < seq_len; i++){
+          z = pn1[i] + liquid::math::I*pn2[i];
           fwrite((void *)(pn1 + i), sizeof(std::complex<float>), 1, f_pn1);
           fwrite((void *)(pn2 + i), sizeof(std::complex<float>), 1, f_pn2);
-          z = pn1[i] + liquid::math::I*pn2[i];
           fwrite((void *)&z, sizeof(std::complex<float>), 1, f_pn3);
         }
+        fclose(f_pn1);
+        fclose(f_pn2);
         fclose(f_pn3);
       }
       reset();
