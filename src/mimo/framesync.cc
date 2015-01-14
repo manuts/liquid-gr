@@ -587,7 +587,7 @@ namespace liquid {
 
         if (pn2_counter == seq_len) {
           syncpn2();
-          state = STATE_DETECTFRAME3;
+          state = STATE_DETECTFRAME1;
           frame2_count++;
           if(__SAVE__)
             fwrite((void *)preamble_rx2, sizeof(std::complex<float>), seq_len, f_pn2);

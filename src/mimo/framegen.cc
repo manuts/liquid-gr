@@ -133,7 +133,7 @@ namespace liquid {
               state = STATE_PNZ2;
               break;
             case(STATE_PNZ2):
-              state = STATE_TXPN3;
+              state = STATE_TXPN1;
               break;
             case(STATE_TXPN3):
               state = STATE_PNZ3;
