@@ -494,6 +494,8 @@ namespace liquid {
       if (detected) {
         printf("***** frame2 detected! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
                tau_hat2, dphi_hat2, 20*log10f(gamma_hat2));
+        printf("***** Estimate diffs!! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
+               tau_hat1 - tau_hat2, dphi_hat1 - dphi_hat2, 20*log10f(gamma_hat1/gamma_hat2));
 
         // push buffered samples through synchronizer
         // NOTE: this will set internal state appropriately
