@@ -75,7 +75,7 @@ namespace liquid {
       firinterp_crcf_destroy(interp);
     }
 
-    unsigned int framegen::work(std::vector<std::complex<float>*> tx_sig,
+    unsigned int framegen::work(std::complex<float> ** tx_sig,
                                 unsigned int num_output)
     {
       unsigned int count = 0;
