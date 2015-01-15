@@ -62,7 +62,7 @@ namespace liquid {
         void reset();
         unsigned int get_pn_len();
         unsigned int get_num_frames();
-        unsigned int work(std::vector<std::complex<float>*>, unsigned int num_output);
+        unsigned int work(std::complex<float> **, unsigned int num_output);
     };
 
     class framesync
