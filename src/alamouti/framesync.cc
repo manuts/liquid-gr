@@ -290,7 +290,7 @@ namespace liquid {
                  20*log10f(gamma_hat[0][0]/gamma_hat[0][1]));
         }
 
-        pushpn1();
+        state = STATE_DETECTFRAME2;
       }
     }
 
@@ -356,8 +356,7 @@ namespace liquid {
 
     void framesync::pushpn1()
     {
-      int delay = find_index_of_corr();
-      state = STATE_DETECTFRAME2;
+      ;
     }
 
     int framesync::find_index_of_corr() {
