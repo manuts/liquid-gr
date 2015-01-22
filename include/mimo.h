@@ -18,6 +18,8 @@
 #ifndef MIMO_H
 #define MIMO_H
 
+#define GUP_TIMER_MAX 1000
+
 #include <math.h>
 #include <assert.h>
 #include <complex>
@@ -29,14 +31,22 @@
 
 #include "liquid_math.h"
 
+typedef struct {
+  bool update;
+  float gamma_hat_ratio;
+} gain_updates;
+
 namespace liquid {
   namespace mimo {
+
     class framegen
     {
       private:
         unsigned int seq_len_exp;
         unsigned int seq_len;
         unsigned int frame_count;
+        unsigned int frame_len;
+        unsigned int num_states;
         unsigned int pn_count;
         unsigned int sps_count;
         std::complex<float> * sps;
@@ -46,7 +56,9 @@ namespace liquid {
         unsigned int k;
         unsigned int m;
         float beta;
-        float gain;
+        float gain1;
+        float gain2;
+        gain_updates * gup;
 
         enum {
             STATE_TXPN1 = 0,
@@ -57,11 +69,15 @@ namespace liquid {
             STATE_PNZ3,
         } state;
       public:
-        framegen(unsigned int, unsigned int, float, float);
+        framegen(unsigned int, unsigned int, float);
         ~framegen();
         void reset();
+        void set_gains(float, float);
+        void set_gup(gain_updates *);
+        void update_gup();
         unsigned int get_pn_len();
-        unsigned int get_num_frames();
+        unsigned int get_frame_len();
+        unsigned int get_frame_count();
         unsigned int work(std::complex<float> **, unsigned int num_output);
     };
 
@@ -72,6 +88,7 @@ namespace liquid {
         unsigned long int frame1_count;
         unsigned long int frame2_count;
         unsigned long int frame3_count;
+        unsigned long int data_count;
 
         framesync_callback callback;     // user-defined callback function
         void * userdata;                 // user-defined data structure
@@ -140,6 +157,16 @@ namespace liquid {
         std::complex<float> * preamble_rx2;  // received p/n symbols
         std::complex<float> * preamble_pn3;  // known 64-symbol p/n sequence
         std::complex<float> * preamble_rx3;  // received p/n symbols
+
+        std::complex<float> * payload_sym;
+        unsigned char * payload_mod;         // payload symbols (modem output)
+        modem demod_payload;
+
+        gain_updates gup;
+        unsigned int gup_update_timer;
+        float gamma_hat_ratios[GUP_TIMER_MAX];
+        void update_gup();
+        float avg_ratio();
         
         // status variables
         enum {
@@ -149,10 +176,12 @@ namespace liquid {
             STATE_RXPN2,                    // receive p/n sequence
             STATE_DETECTFRAME3,             // detect frame (seek p/n sequence)
             STATE_RXPN3,                    // receive p/n sequence
+            STATE_RXPAYLOAD
         } state;
         unsigned int pn1_counter;        // counter: num of p/n syms received
         unsigned int pn2_counter;        // counter: num of p/n syms received
         unsigned int pn3_counter;        // counter: num of p/n syms received
+        unsigned int payload_counter;    // counter: num of p/n syms received
 
         // push samples through detection stage 1
         void execute_seekpn1(std::complex<float> _x);
@@ -184,6 +213,8 @@ namespace liquid {
         void syncpn2();
         void syncpn3();
 
+        void execute_rxpayload(std::complex<float> _x);
+
         FILE * f_pn1;
         FILE * f_pn2;
         FILE * f_pn3;
@@ -195,10 +226,13 @@ namespace liquid {
         void reset1();
         void reset2();
         void reset3();
+        void reset();
         void work(std::complex<float> *, unsigned int);
         unsigned long int get_frame1_count();
         unsigned long int get_frame2_count();
         unsigned long int get_frame3_count();
+        unsigned long int get_data_count();
+        bool get_gup(gain_updates * shared_gup_ptr);
     };
   }
 }

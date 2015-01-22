@@ -15,6 +15,7 @@
  * along with this software.  If not, see <http://www.gnu.org/licenses/>.
  */
 #define __SAVE__ 1
+#define PRINT_ON_DETECT 1
 #include "mimo.h"
 
 namespace liquid {
@@ -36,7 +37,9 @@ namespace liquid {
       preamble_pn3 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*seq_len); 
       preamble_rx1 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*seq_len); 
       preamble_rx2 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*seq_len); 
-      preamble_rx3 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*seq_len); 
+      preamble_rx3 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*seq_len);
+      payload_sym = (std::complex<float> *)malloc(sizeof(std::complex<float>)*seq_len); 
+      payload_mod = (unsigned char *)malloc(sizeof(unsigned char)*seq_len); 
       for (unsigned int i = 0; i < seq_len; i++){
         preamble_pn1[i] = (msequence_advance(ms1)) ? 1.0f : -1.0f;
         preamble_pn2[i] = (msequence_advance(ms2)) ? 1.0f : -1.0f;
@@ -105,21 +108,68 @@ namespace liquid {
       nco_fine3   = nco_crcf_create(LIQUID_VCO);
       nco_crcf_pll_set_bandwidth(nco_fine3, 0.05f);
 
+      demod_payload = modem_create(LIQUID_MODEM_QPSK);
+
       frame1_count = 0;
       frame2_count = 0;
       frame3_count = 0;
+      data_count = 0;
+      gup_update_timer = 0;
+      gup.gamma_hat_ratio = 1.0;
 
       // reset state
       state = STATE_DETECTFRAME1;
-      reset1();
-      reset2();
-      reset3();
+      reset();
 
       if(__SAVE__){
         f_pn1 = fopen("/tmp/rx_pn1", "wb");
         f_pn2 = fopen("/tmp/rx_pn2", "wb");
         f_pn3 = fopen("/tmp/rx_pn3", "wb");
       }
+    }
+
+    float framesync::avg_ratio()
+    {
+      float sum = 0;
+      for(unsigned int i = 0; i < GUP_TIMER_MAX; i++)
+        sum += gamma_hat_ratios[i];
+      return sum/float(GUP_TIMER_MAX);
+    }
+
+    void framesync::update_gup() {
+      float ratio = 20*log10f(gamma_hat1/gamma_hat2);
+      if(fabsf(ratio) > 0.5)
+      {
+        if(gup_update_timer == GUP_TIMER_MAX - 1) {
+          gup.update = true;
+          gup.gamma_hat_ratio = avg_ratio();
+          gup_update_timer = 0;
+        }
+        else
+          gup_update_timer++;
+        gamma_hat_ratios[gup_update_timer] = ratio;
+      }
+      else
+        gup_update_timer = 0;
+    }
+
+    bool framesync::get_gup(gain_updates * shared_gup_ptr)
+    {
+      if(gup.update) {
+        memmove((void *)shared_gup_ptr, (void *)&gup, sizeof(gain_updates));
+        gup.update = false;
+        return true;
+      }
+      else
+        return false;
+    }
+
+    void framesync::reset()
+    {
+      reset1();
+      reset2();
+      reset3();
+      payload_counter = 0;
     }
 
     void framesync::reset1()
@@ -205,6 +255,8 @@ namespace liquid {
       free(preamble_rx1);
       free(preamble_rx2);
       free(preamble_rx3);
+      free(payload_sym);
+      free(payload_mod);
       detector_cccf_destroy(frame1_detector);  // frame detector
       detector_cccf_destroy(frame2_detector);  // frame detector
       detector_cccf_destroy(frame3_detector);  // frame detector
@@ -254,6 +306,10 @@ namespace liquid {
             // detect frame (look for p/n sequence)
             execute_rxpn3(_x[i]);
             break;
+          case STATE_RXPAYLOAD:
+            // detect frame (look for p/n sequence)
+            execute_rxpayload(_x[i]);
+            break;
         default:
             fprintf(stderr,"error: framesync64_exeucte(), unknown/unsupported state\n");
             exit(1);
@@ -275,8 +331,10 @@ namespace liquid {
 
       // check if frame has been detected
       if (detected) {
-        printf("***** frame1 detected! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
-               tau_hat1, dphi_hat1, 20*log10f(gamma_hat1));
+        if (PRINT_ON_DETECT) {
+          printf("***** frame1 detected! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
+                 tau_hat1, dphi_hat1, 20*log10f(gamma_hat1));
+        }
 
         // push buffered samples through synchronizer
         // NOTE: this will set internal state appropriately
@@ -375,7 +433,6 @@ namespace liquid {
           frame1_count++;
           if(__SAVE__)
             fwrite((void *)preamble_rx1, sizeof(std::complex<float>), seq_len, f_pn1);
-          reset1();
         }
       }
     }
@@ -492,14 +549,17 @@ namespace liquid {
 
       // check if frame has been detected
       if (detected) {
-        printf("***** frame2 detected! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
-               tau_hat2, dphi_hat2, 20*log10f(gamma_hat2));
-        printf("***** Estimate diffs!! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
-               tau_hat1 - tau_hat2, dphi_hat1 - dphi_hat2, 20*log10f(gamma_hat1/gamma_hat2));
+        if (PRINT_ON_DETECT) {
+          printf("***** frame2 detected! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
+                tau_hat2, dphi_hat2, 20*log10f(gamma_hat2));
+          printf("***** Estimate diffs!! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
+                tau_hat1 - tau_hat2, dphi_hat1 - dphi_hat2, 20*log10f(gamma_hat1/gamma_hat2));
+        }
 
         // push buffered samples through synchronizer
         // NOTE: this will set internal state appropriately
         //       to STATE_SEEKPN
+        update_gup();
         pushpn2();
       }
     }
@@ -548,13 +608,13 @@ namespace liquid {
           if(state == STATE_DETECTFRAME2)
           {
             state = STATE_RXPN2;
-            execute_rxpn1(rc[i]);
+            execute_rxpn2(rc[i]);
           }
           else if(state == STATE_RXPN2)
           {
             execute_rxpn2(rc[i]);
           }
-          else if(state == STATE_DETECTFRAME3)
+          else if(state == STATE_RXPAYLOAD)
           {
             return;
           }
@@ -589,11 +649,10 @@ namespace liquid {
 
         if (pn2_counter == seq_len) {
           syncpn2();
-          state = STATE_DETECTFRAME3;
+          state = STATE_RXPAYLOAD;
           frame2_count++;
           if(__SAVE__)
             fwrite((void *)preamble_rx2, sizeof(std::complex<float>), seq_len, f_pn2);
-          reset2();
         }
       }
     }
@@ -710,8 +769,10 @@ namespace liquid {
 
       // check if frame has been detected
       if (detected) {
-        printf("***** frame3 detected! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
-               tau_hat3, dphi_hat3, 20*log10f(gamma_hat3));
+        if (PRINT_ON_DETECT) {
+          printf("***** frame3 detected! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
+                tau_hat3, dphi_hat3, 20*log10f(gamma_hat3));
+        }
 
         // push buffered samples through synchronizer
         // NOTE: this will set internal state appropriately
@@ -810,7 +871,7 @@ namespace liquid {
           frame3_count++;
           if(__SAVE__)
             fwrite((void *)preamble_rx3, sizeof(std::complex<float>), seq_len, f_pn3);
-          reset3();
+          reset();
         }
       }
     }
@@ -913,6 +974,52 @@ namespace liquid {
       }
     }
 
+    void framesync::execute_rxpayload(std::complex<float> _x)
+    {
+      // mix signal down
+      std::complex<float> y;
+      nco_crcf_mix_down(nco_coarse1, _x*0.5f/gamma_hat1, &y);
+      nco_crcf_step(nco_coarse1);
+
+      // update symbol synchronizer
+      std::complex<float> mf_out = 0.0f;
+      int sample_available = update_symsync1(y, &mf_out);
+
+      // compute output if timeout
+      if (sample_available) {
+
+        // push through fine-tuned nco
+        nco_crcf_mix_down(nco_fine1, mf_out, &mf_out);
+        // save payload symbols for callback (up to 256 values)
+        if (payload_counter < seq_len)
+            payload_sym[payload_counter] = mf_out;
+        
+        // demodulate
+        unsigned int sym_out = 0;
+        modem_demodulate(demod_payload, mf_out, &sym_out);
+        payload_mod[payload_counter] = (unsigned char)sym_out;
+
+        // update phase-locked loop and fine-tuned NCO
+        float phase_error = modem_get_demodulator_phase_error(demod_payload);
+        nco_crcf_pll_step(nco_fine1, phase_error);
+        nco_crcf_step(nco_fine1);
+
+        // increment counter
+        payload_counter++;
+
+        if (payload_counter == seq_len) {
+          // reset frame synchronizer
+          state = STATE_DETECTFRAME1;
+          data_count++;
+          reset();
+          for(unsigned int n = 0; n < seq_len; n++)
+            printf("%u", payload_mod[n]);
+          printf("\n");
+          return;
+        }
+      }
+    }
+
     unsigned long int framesync::get_frame1_count() {
       return frame1_count;
     }
@@ -923,6 +1030,10 @@ namespace liquid {
 
     unsigned long int framesync::get_frame3_count() {
       return frame3_count;
+    }
+
+    unsigned long int framesync::get_data_count() {
+      return data_count;
     }
   }   // namespace mimo
 }     // namespace liquid

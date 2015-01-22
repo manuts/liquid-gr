@@ -18,16 +18,22 @@ LDFLAGS			= -L/target/lib -L/target/lib64
 LDFLAGS			+= -lm -lc -lliquid
 ARFLAGS			= r
 
-library_src		:=					\
-  src/test/copy.cc				\
-  src/mimo/framegen.cc		\
-  src/mimo/framesync.cc		\
-  src/math/liquid_math.cc	\
+library_src		:=							\
+  src/test/copy.cc						\
+  src/mimo/framegen.cc				\
+  src/mimo/framesync.cc				\
+  src/alamouti/framegen.cc		\
+  src/alamouti/framesync.cc		\
+	src/simo/framegen.cc				\
+  src/simo/framesync.cc				\
+  src/math/liquid_math.cc			\
 
-library_hdr		:=					\
-  include/test.h					\
-  include/mimo.h					\
-  include/liquid_math.h		\
+library_hdr		:=							\
+  include/test.h							\
+  include/mimo.h							\
+  include/alamouti.h					\
+	include/simo.h							\
+  include/liquid_math.h				\
 
 library_objs	= $(patsubst %.cc, %.o, $(library_src))
 

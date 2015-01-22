@@ -17,13 +17,13 @@
 
 #define __SAVE__ 1
 #include "mimo.h"
+#define MIMO 1
 
 namespace liquid {
   namespace mimo {
     framegen::framegen(unsigned int _k,
                        unsigned int _m,
-                       float _beta,
-                       float _gain) {
+                       float _beta) {
       seq_len_exp = 6;
       seq_len = (unsigned int)(pow(2, seq_len_exp)) - 1;
       pn1 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*seq_len);
@@ -39,7 +39,12 @@ namespace liquid {
       k = _k;
       m = _m;
       beta = _beta;
-      gain = _gain;
+      gain1 = 0.25;
+      gain2 = 0.25;
+
+      num_states = 5;
+      frame_len = num_states*seq_len*k;
+
       interp = firinterp_crcf_create_rnyquist(LIQUID_FIRFILT_ARKAISER,k,m,beta,0);
       sps = (std::complex<float> *)malloc(sizeof(std::complex<float>)*k);
 
@@ -64,8 +69,47 @@ namespace liquid {
       reset();
     }
 
+    void framegen::set_gains(float g1, float g2)
+    {
+      gain1 = g1;
+      gain2 = g2;
+    }
+
+    void framegen::update_gup()
+    {
+      if(gup->update)
+      {
+        float ratio_dB = gup->gamma_hat_ratio;
+        float ratio = powf(10.0, ratio_dB/20.0);
+        if(ratio > 1.0)
+        {
+          gain2 = 0.25*ratio;
+          gain1 = 0.25;
+        }
+        else
+        {
+          gain1 = 0.25*(1.0/ratio);
+          gain2 = 0.25;
+        }
+        if((gain1 < 0.1) or (gain1 > 2.0) or (gain2 > 2.0) or (gain2 < 0.1)) {
+          gain1 = 0.25;
+          gain2 = 0.25;
+        }
+        printf("Gain 1 :%8.4f, Gain 2 :%8.4f\n", gain1, gain2);
+      }
+    }
+
+    void framegen::set_gup(gain_updates * shared_gup_ptr)
+    {
+      gup = shared_gup_ptr;
+    }
+
     unsigned int framegen::get_pn_len() {
       return seq_len;
+    }
+
+    unsigned int framegen::get_frame_len() {
+      return frame_len;
     }
 
     framegen::~framegen() {
@@ -83,8 +127,14 @@ namespace liquid {
       for(; (sps_count < k)
           && (count < num_output); sps_count++)
       {
-        tx_sig[0][count] = gain*(sps[sps_count].real()) + liquid::math::Z;
-        tx_sig[1][count] = liquid::math::Z + liquid::math::I*(gain*(sps[sps_count].imag()));
+        if(MIMO) {
+          tx_sig[0][count] = gain1*(sps[sps_count].real()) + liquid::math::Z;
+          tx_sig[1][count] = liquid::math::Z + liquid::math::I*(gain2*(sps[sps_count].imag()));
+        }
+        else {
+          tx_sig[0][count] = gain1*sps[sps_count];
+          tx_sig[1][count] = liquid::math::Z;
+        }
         count++;
       }
       // tx new symbols
@@ -98,7 +148,7 @@ namespace liquid {
             firinterp_crcf_execute(interp, liquid::math::Z, sps);
             break;
           case(STATE_TXPN2):
-            firinterp_crcf_execute(interp, pn2[pn_count], sps);
+            firinterp_crcf_execute(interp, liquid::math::I*pn2[pn_count], sps);
             break;
           case(STATE_PNZ2):
             firinterp_crcf_execute(interp, liquid::math::Z, sps);
@@ -115,13 +165,18 @@ namespace liquid {
         for(sps_count = 0; (sps_count < k)
             && (count < num_output); sps_count++)
         {
-          tx_sig[0][count] = gain*(sps[sps_count].real()) + liquid::math::Z;
-          tx_sig[1][count] = liquid::math::Z + liquid::math::I*(gain*(sps[sps_count].imag()));
+          if(MIMO) {
+            tx_sig[0][count] = gain1*(sps[sps_count].real()) + liquid::math::Z;
+            tx_sig[1][count] = liquid::math::Z + liquid::math::I*(gain2*(sps[sps_count].imag()));
+          }
+          else {
+            tx_sig[0][count] = gain1*sps[sps_count];
+            tx_sig[1][count] = liquid::math::Z;
+          }
           count++;
         }
         if(pn_count == seq_len)
         {
-          frame_count += 1;
           switch(state) {
             case(STATE_TXPN1):
               state = STATE_PNZ1;
@@ -130,7 +185,7 @@ namespace liquid {
               state = STATE_TXPN2;
               break;
             case(STATE_TXPN2):
-              state = STATE_PNZ2;
+              state = STATE_TXPN3;
               break;
             case(STATE_PNZ2):
               state = STATE_TXPN3;
@@ -140,6 +195,7 @@ namespace liquid {
               break;
             case(STATE_PNZ3):
               state = STATE_TXPN1;
+              frame_count++;
               break;
           }
           pn_count = 0;
@@ -156,7 +212,7 @@ namespace liquid {
       sps_count = k;
     }
 
-    unsigned int framegen::get_num_frames()
+    unsigned int framegen::get_frame_count()
     {
       return frame_count;
     }
