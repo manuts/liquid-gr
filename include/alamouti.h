@@ -30,8 +30,69 @@
 
 #include "liquid_math.h"
 
+#define NUM_FILTS 32
+#define RANGE 30
+
 namespace liquid {
   namespace alamouti {
+
+    class tx_buff_transformer
+    {
+      private:
+        bool initialized;
+        unsigned int usrp_buff_len;
+        unsigned int packer_buff_len;
+        unsigned int items_txed;
+        unsigned int hist;
+        std::complex<float> * usrp_buff[2];
+        std::complex<float> * packer_buff[2];
+        std::complex<float> * history[2];
+      public:
+
+        tx_buff_transformer();
+        ~tx_buff_transformer();
+        void set_usrp_buff_len(unsigned int);
+        void set_packer_buff_len(unsigned int);
+        void set_usrp_buff(std::complex<float> **);
+        void set_packer_buff(std::complex<float> **);
+        void copy_buff();
+        bool fill_buff();
+    };
+
+    class rx_buff_transformer
+    {
+      private:
+        bool initialized;
+        unsigned int usrp_buff_len;
+        unsigned int unpacker_buff_len;
+        unsigned int items_rxed;
+        unsigned int hist;
+        std::complex<float> * usrp_buff[2];
+        std::complex<float> * unpacker_buff[2];
+        std::complex<float> * history[2];
+      public:
+
+        rx_buff_transformer();
+        ~rx_buff_transformer();
+        void set_usrp_buff_len(unsigned int);
+        void set_unpacker_buff_len(unsigned int);
+        void set_usrp_buff(std::complex<float> **);
+        void set_unpacker_buff(std::complex<float> **);
+        void copy_buff();
+        bool dump_buff();
+    };
+
+    class delay
+    {
+      private:
+        std::complex<float> * hist;
+        unsigned int d;
+      public:
+        delay(unsigned int);
+        ~delay();
+        void set_delay(unsigned int);
+        void work(std::complex<float> *, unsigned int);
+    };
 
     class framegen
     {
@@ -73,13 +134,44 @@ namespace liquid {
         unsigned int work(std::complex<float> **);
     };
 
+    class channel_estimator
+    {
+      private:
+        std::complex<float> * training_seq;
+        unsigned int training_seq_len;
+        float threshold;
+        float dphi_max;
+        unsigned int m;
+        float dphi_step;
+        float dphi[NUM_FILTS];
+        float rxy[NUM_FILTS];
+        dotprod_cccf * dp;
+
+        unsigned int loc_max_index, glo_max_index, glo_max_freq_index;
+        float glo_max, glo_max_freq;
+
+      public:
+        channel_estimator(std::complex<float> * _training_seq,
+                          unsigned int _training_seq_len,
+                          float _threshold,
+                          float _dphi_max);
+        ~channel_estimator();
+        int find_corr_index(std::complex<float> *, unsigned int);
+        void reset();
+    };
+
     class framesync
     {
       private:
         //
+        channel_estimator * estimator;
         unsigned long int training_seq_n[2][2];
-        unsigned int training_match_index[2][2];
+        int training_match_index[2][2];
+        unsigned int pn_count;
+        unsigned int payload_count;
+        unsigned int work_exec_cycle;
         // synchronizer objects
+        unsigned int wait_for_pn2;
         unsigned int training_seq_len;
         unsigned int payload_len;
         unsigned int frame_len;
@@ -88,8 +180,17 @@ namespace liquid {
         float tau_hat[2][2];                  // fractional timing offset estimate
         float dphi_hat[2][2];                 // carrier frequency offset estimate
         float gamma_hat[2][2];                // channel gain estimate
-        windowcf buffer[2];                   // pre-demod buffered samples, size: k*(pn_len+m)
+        windowcf pn_window[2];                // pre-demod buffered samples, size: k*(pn_len+m)
+        windowcf pn_window_unscaled[2];       // pre-demod buffered samples, size: k*(pn_len+m)
+        windowcf payload_window[2];           // pre-demod buffered samples, size: k*(pn_len+m)
+        dotprod_cccf pn_dotprods[2];
+        std::complex<float> * rx_sig[2];
+        std::complex<float> * last_rx_sig[2];
+        std::complex<float> * curr_rx_sig[2];
+        int rx_sig_index;
         float nco_coarse_freq;
+        float nco_fine_freq;
+        float nco_fine_phase;
         nco_crcf nco_coarse[2];            // coarse carrier frequency recovery
         nco_crcf nco_fine[2];              // fine carrier recovery (after demod)
         
@@ -101,10 +202,10 @@ namespace liquid {
         unsigned int npfb;
         firpfb_crcf mf[2];                 // matched filter decimator
         firpfb_crcf dmf[2];                // derivative matched filter decimator
-        float pfb_q[2];                    //
-        float pfb_soft[2];                 // soft filterbank index
-        int pfb_index[2];                  // hard filterbank index
-        int pfb_timer[2];                  // filterbank output flag
+        float pfb_q;                       //
+        float pfb_soft;                    // soft filterbank index
+        int pfb_index;                     // hard filterbank index
+        int pfb_timer;                     // filterbank output flag
         std::complex<float> symsync_out[2];// symbol synchronizer output
         
         // preamble
@@ -114,11 +215,8 @@ namespace liquid {
         // status variables
         enum {
             STATE_DETECTFRAME1=0,           // detect frame (seek p/n sequence)
-            STATE_RXPN1,                    // receive p/n sequence
             STATE_DETECTFRAME2,             // detect frame (seek p/n sequence)
-            STATE_RXPN2,                    // receive p/n sequence
-            STATE_DETECTFRAME3,             // detect frame (seek p/n sequence)
-            STATE_RXPN3,                    // receive p/n sequence
+            STATE_RXPN,                    // receive p/n sequence
             STATE_RXPAYLOAD
         } state;
 
@@ -128,35 +226,29 @@ namespace liquid {
         // update symbol synchronizer internal state (filtered error, index, etc.)
         //  _x      :   input sample
         //  _y      :   output symbol
-        int update_symsync1(std::complex<float>   _x,
-                           std::complex<float> * _y);
-        int update_symsync2(std::complex<float>   _x,
-                           std::complex<float> * _y);
-        int update_symsync3(std::complex<float>   _x,
-                           std::complex<float> * _y);
+        int update_symsync(std::complex<float> *,
+                           std::complex<float> *);
         // push buffered p/n sequence through synchronizer
-        void pushpn1();
-        void pushpn2();
-
-        // push samples through synchronizer, saving received p/n symbols
-        void execute_rxpn1(std::complex<float> ** _x, unsigned int i);
-        void execute_rxpn2(std::complex<float> ** _x, unsigned int i);
-
-        // once p/n symbols are buffered, estimate residual carrier
-        // frequency and phase offsets, push through fine-tuned NCO
-        void syncpn1();
-        void syncpn2();
+        void pushpn();
 
         void execute_rxpayload(std::complex<float> ** _x, unsigned int i);
+        void execute_rxpn(std::complex<float> ** _x, unsigned int i);
         void update_training_sequence_n();
         int find_index_of_corr();
-        void training_match_index_diffs();
+        void training_match_index_diffs1();
+        void training_match_index_diffs2();
+        void find_channel_diffs();
+      
+        void sync_pn();
+        void decode_payload();
 
       public:
         framesync(unsigned int, unsigned int, float);
         ~framesync();
         void reset();
         void work(std::complex<float> **, unsigned int);
+        unsigned int get_frame_len();
+        void print_frame_struct();
     };
   }
 }

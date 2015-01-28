@@ -16,11 +16,13 @@
  */
 #include "alamouti.h"
 
-#define PRINT_STATS_TX1RX1 true
-#define PRINT_STATS_TX1RX2 true
-#define PRINT_STATS_TX2RX1 true
-#define PRINT_STATS_TX2RX2 true
-#define PRINT_STAT_DIFFS false
+#define PRINT_STATS_TX1RX1  false
+#define PRINT_STATS_TX1RX2  false
+#define PRINT_STATS_TX2RX1  false
+#define PRINT_STATS_TX2RX2  false
+#define PRINT_STAT_DIFFS    false
+#define PRINT_PHASES        false
+#define SHOW_OTHER_DOTS     true
 
 namespace liquid {
   namespace alamouti {
@@ -29,10 +31,10 @@ namespace liquid {
                          float _beta)
     {
       training_seq_len = 63;
-      payload_len = 128;
+      payload_len = 1024;
 
-      msequence ms1 = msequence_create(6, 0x005b, 1);
-      msequence ms2 = msequence_create(6, 0x0043, 1);
+      msequence ms1 = msequence_create(6, 0x0043, 1);
+      msequence ms2 = msequence_create(6, 0x005b, 1);
       preamble_pn[0] = (std::complex<float> *)malloc(sizeof(std::complex<float>)*training_seq_len); 
       preamble_pn[1] = (std::complex<float> *)malloc(sizeof(std::complex<float>)*training_seq_len); 
       preamble_rx[0][0] = (std::complex<float> *)malloc(sizeof(std::complex<float>)*training_seq_len); 
@@ -50,18 +52,17 @@ namespace liquid {
       k     = _k;        // samples/symbol
       m     = _m;        // filter delay (symbols)
       beta  = _beta;    // excess bandwidth factor
-      frame_len = k*(2*training_seq_len + payload_len + m);
+      frame_len = k*(3*training_seq_len + payload_len + 3*m);
 
       std::complex<float> seq1[k*training_seq_len];
       std::complex<float> seq2[k*training_seq_len];
       firinterp_crcf interp1 = firinterp_crcf_create_rnyquist(LIQUID_FIRFILT_ARKAISER,k,m,beta,0);
       firinterp_crcf interp2 = firinterp_crcf_create_rnyquist(LIQUID_FIRFILT_ARKAISER,k,m,beta,0);
 
-      for (unsigned int i = 0; i < training_seq_len; i++) {
+/*      for (unsigned int i = 0; i < training_seq_len; i++) {
         firinterp_crcf_execute(interp1, preamble_pn[0][i%training_seq_len], &seq1[k*i]);
         firinterp_crcf_execute(interp2, preamble_pn[1][i%training_seq_len], &seq2[k*i]);
-      }
-      /*      
+      }*/     
       for (unsigned int i = 0; i < training_seq_len + m; i++) {
         // compensate for filter delay
         if (i < m) {
@@ -72,19 +73,33 @@ namespace liquid {
             firinterp_crcf_execute(interp1, preamble_pn[0][i%training_seq_len], &seq1[k*(i - m)]);
             firinterp_crcf_execute(interp2, preamble_pn[1][i%training_seq_len], &seq2[k*(i - m)]);
         }
-      }*/
+      }
       firinterp_crcf_destroy(interp1);
       firinterp_crcf_destroy(interp2);
 
       // create frame detector
-      float threshold = 0.4f;     // detection threshold
+      float threshold = 0.5f;     // detection threshold
       float dphi_max  = 0.05f;    // maximum carrier offset allowable
       frame_detector[0][0] = detector_cccf_create(seq1, k*training_seq_len, threshold, dphi_max);
       frame_detector[0][1] = detector_cccf_create(seq1, k*training_seq_len, threshold, dphi_max);
       frame_detector[1][0] = detector_cccf_create(seq2, k*training_seq_len, threshold, dphi_max);
       frame_detector[1][1] = detector_cccf_create(seq2, k*training_seq_len, threshold, dphi_max);
-      buffer[0] = windowcf_create(frame_len);
-      buffer[1] = windowcf_create(frame_len);
+
+      payload_window[0] = windowcf_create(payload_len);
+      payload_window[1] = windowcf_create(payload_len);
+      pn_window[0] = windowcf_create(3*training_seq_len + 2*m);
+      pn_window[1] = windowcf_create(3*training_seq_len + 2*m);
+      pn_window_unscaled[0] = windowcf_create(3*training_seq_len + 2*m);
+      pn_window_unscaled[1] = windowcf_create(3*training_seq_len + 2*m);
+      pn_dotprods[0] = dotprod_cccf_create(preamble_pn[0], training_seq_len);
+      pn_dotprods[1] = dotprod_cccf_create(preamble_pn[1], training_seq_len);
+
+      rx_sig[0] = (std::complex<float> *)malloc(sizeof(std::complex<float>)*frame_len*2);
+      rx_sig[1] = (std::complex<float> *)malloc(sizeof(std::complex<float>)*frame_len*2);
+      last_rx_sig[0] = rx_sig[0];
+      last_rx_sig[1] = rx_sig[1];
+      curr_rx_sig[0] = rx_sig[0] + frame_len;
+      curr_rx_sig[1] = rx_sig[1] + frame_len;
 
       npfb = 32;
       mf[0]   = firpfb_crcf_create_rnyquist(LIQUID_FIRFILT_ARKAISER, npfb,k,m,beta);
@@ -93,6 +108,7 @@ namespace liquid {
       dmf[1]  = firpfb_crcf_create_drnyquist(LIQUID_FIRFILT_ARKAISER,npfb,k,m,beta);
 
       nco_coarse_freq = 0.0f;
+      nco_fine_freq = 0.0f;
       nco_coarse[0] = nco_crcf_create(LIQUID_NCO);
       nco_coarse[1] = nco_crcf_create(LIQUID_NCO);
       nco_fine[0]   = nco_crcf_create(LIQUID_VCO);
@@ -110,12 +126,35 @@ namespace liquid {
       nco_crcf_reset(nco_fine[0]);
       nco_crcf_reset(nco_fine[1]);
 
+      // reset symbol timing recovery state
+      firpfb_crcf_reset(mf[0]);
+      firpfb_crcf_reset(mf[1]);
+      firpfb_crcf_reset(dmf[0]);
+      firpfb_crcf_reset(dmf[1]);
+      pfb_timer = k;
+      pfb_soft = 0.0;
+      pfb_index = 0;
+
       training_seq_n[0][0] = 0;
       training_seq_n[0][1] = 0;
       training_seq_n[1][0] = 0;
       training_seq_n[1][1] = 0;
 
+      estimator = new channel_estimator(seq1, k*training_seq_len, threshold, dphi_max);
+      work_exec_cycle = 0;
+
       reset();
+    }
+
+    void framesync::print_frame_struct()
+    {
+      printf("*****                     Frame Structure                             *****\n");
+      printf("Duration : || 63 Symb |  3 Symb | 63 Symb | 63 Symb | 1024 Symb | 3 Symb ||\n");
+      printf("Channel 1: || PN1 Seq |  Zeros  |  Zeros  | Phasing |  Payload  |  Zeros ||\n");
+      printf("Channel 2: ||  Zeros  |  Zeros  | PN2 Seq | Phasing |  Payload  |  Zeros ||\n");
+      printf("Pulse Shape : k = %u, m = %u, beta = %f\n", k, m, beta);
+      printf("Frame length : %u\n", frame_len);
+      printf("***************************************************************************\n");
     }
 
     void framesync::reset()
@@ -131,15 +170,16 @@ namespace liquid {
       detector_cccf_reset(frame_detector[1][0]);
       detector_cccf_reset(frame_detector[1][1]);
 
-      windowcf_clear(buffer[0]);
-      windowcf_clear(buffer[1]);
+      windowcf_clear(pn_window[0]);
+      windowcf_clear(pn_window[1]);
+      windowcf_clear(pn_window_unscaled[0]);
+      windowcf_clear(pn_window_unscaled[1]);
+      windowcf_clear(payload_window[0]);
+      windowcf_clear(payload_window[1]);
 
-      // reset symbol timing recovery state
-      firpfb_crcf_reset(mf[0]);
-      firpfb_crcf_reset(mf[1]);
-      firpfb_crcf_reset(dmf[0]);
-      firpfb_crcf_reset(dmf[1]);
-      update_training_sequence_n();
+      pn_count = 0;
+      payload_count = 0;
+//      update_training_sequence_n();
     }
 
     framesync::~framesync()
@@ -150,14 +190,19 @@ namespace liquid {
       free(preamble_rx[0][1]);
       free(preamble_rx[1][0]);
       free(preamble_rx[1][1]);
+      free(rx_sig[0]);
+      free(rx_sig[1]);
+      delete estimator;
 
       detector_cccf_destroy(frame_detector[0][0]);
       detector_cccf_destroy(frame_detector[0][1]);
       detector_cccf_destroy(frame_detector[1][0]);
       detector_cccf_destroy(frame_detector[1][1]);
 
-      windowcf_destroy(buffer[0]);
-      windowcf_destroy(buffer[1]);
+      windowcf_destroy(pn_window[0]);
+      windowcf_destroy(pn_window[1]);
+      windowcf_destroy(payload_window[0]);
+      windowcf_destroy(payload_window[1]);
 
       firpfb_crcf_destroy(mf[0]);
       firpfb_crcf_destroy(mf[1]);
@@ -168,28 +213,32 @@ namespace liquid {
       nco_crcf_destroy(nco_coarse[1]);
       nco_crcf_destroy(nco_fine[0]);
       nco_crcf_destroy(nco_fine[1]);
+
+      dotprod_cccf_destroy(pn_dotprods[0]);
+      dotprod_cccf_destroy(pn_dotprods[1]);
+    }
+
+    unsigned int framesync::get_frame_len() {
+      return frame_len;
     }
 
     void framesync::work(std::complex<float> ** _x,
                          unsigned int    _n)
     {
+      assert(_n == frame_len);
+      rx_sig_index = 0;
       for (unsigned int i = 0; i < _n; i++) {
         switch (state) {
           case STATE_DETECTFRAME1:
             // detect frame (look for p/n sequence)
             execute_seekpn1(_x, i);
             break;
-          case STATE_RXPN1:
-            // detect frame (look for p/n sequence)
-            execute_rxpn1(_x, i);
-            break;
           case STATE_DETECTFRAME2:
             // detect frame (look for p/n sequence)
             execute_seekpn2(_x, i);
             break;
-          case STATE_RXPN2:
-            // detect frame (look for p/n sequence)
-            execute_rxpn2(_x, i);
+          case STATE_RXPN:
+            execute_rxpn(_x, i);
             break;
           case STATE_RXPAYLOAD:
             // detect frame (look for p/n sequence)
@@ -200,6 +249,502 @@ namespace liquid {
             exit(1);
         }
       }
+      memmove(last_rx_sig[0], curr_rx_sig[0], sizeof(std::complex<float>)*frame_len);
+      memmove(last_rx_sig[1], curr_rx_sig[1], sizeof(std::complex<float>)*frame_len);
+      printf("Synchronizer Execution cycle :%u\n",work_exec_cycle++);
+    }
+
+    void framesync::execute_seekpn1(std::complex<float> ** _x, unsigned int i)
+    {
+      std::complex<float> y0, y1;
+
+      nco_crcf_mix_down(nco_coarse[0], _x[0][i], &y0);
+      nco_crcf_step(nco_coarse[0]);
+      nco_crcf_mix_down(nco_coarse[1], _x[1][i], &y1);
+      nco_crcf_step(nco_coarse[1]);
+
+      curr_rx_sig[0][rx_sig_index] = y0;
+      curr_rx_sig[1][rx_sig_index] = y1;
+      rx_sig_index++;
+
+      if(PRINT_PHASES) {
+        float phase_1 = std::arg(y0);
+        float phase_2 = std::arg(y1);
+        printf("Channel 1 Phase:%8.4f, Channel 2 Phase:%8.4f, Phase Diffs:%8.4f\n",
+            phase_1, phase_2, phase_2 - phase_1);
+      }
+
+      int ch1_flag = detector_cccf_correlate(frame_detector[0][0],
+                                             y0,
+                                             &tau_hat[0][0],
+                                             &dphi_hat[0][0],
+                                             &gamma_hat[0][0]);
+      int ch2_flag = detector_cccf_correlate(frame_detector[0][1],
+                                             y1,
+                                             &tau_hat[0][1],
+                                             &dphi_hat[0][1],
+                                             &gamma_hat[0][1]);
+ 
+      if(ch1_flag) {
+        frame_detect_flag[0][0] = true;
+        training_match_index[0][0] = i;
+      }
+      if(ch2_flag) {
+        frame_detect_flag[0][1] = true;
+        training_match_index[0][1] = i;
+      }
+
+      if(frame_detect_flag[0][0] and frame_detect_flag[0][1]) {
+        float delta_f = (dphi_hat[0][0] + dphi_hat[0][1])/2.0;
+        if(fabs(delta_f) > 0.001) {
+          nco_coarse_freq += delta_f;
+          nco_crcf_set_frequency(nco_coarse[0], nco_coarse_freq);
+          nco_crcf_set_frequency(nco_coarse[1], nco_coarse_freq);
+        }
+
+        if(PRINT_STATS_TX1RX1) {
+          printf("***** TX1 RX1 Statistics! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB, index:%u, seq_n:%lu\n",
+                 tau_hat[0][0], dphi_hat[0][0], 20*log10f(gamma_hat[0][0]), training_match_index[0][0],
+                 training_seq_n[0][0]++);
+        }
+        if(PRINT_STATS_TX1RX2) {
+          printf("***** TX1 RX2 Statistics! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB, index:%u, seq_n:%lu\n",
+                 tau_hat[0][1], dphi_hat[0][1], 20*log10f(gamma_hat[0][1]), training_match_index[0][1],
+                 training_seq_n[0][1]++);
+        }
+        if(PRINT_STAT_DIFFS) {
+          printf("***** RX1 RX2 Defferences! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
+                 tau_hat[0][0]-tau_hat[0][1], 
+                 dphi_hat[0][0]-dphi_hat[0][1], 
+                 20*log10f(gamma_hat[0][0]/gamma_hat[0][1]));
+        }
+
+//        training_match_index_diffs1();
+        wait_for_pn2 = 0;
+        state = STATE_DETECTFRAME2;
+      }
+    }
+
+    void framesync::execute_seekpn2(std::complex<float> ** _x, unsigned int i)
+    {
+      if(wait_for_pn2 > 4*training_seq_len*k)
+      {
+        printf("Well, I think I dropped a frame in between, Going to reset\n");
+        reset();
+      }
+      wait_for_pn2++;
+      std::complex<float> y0, y1;
+
+      nco_crcf_mix_down(nco_coarse[0], _x[0][i], &y0);
+      nco_crcf_step(nco_coarse[0]);
+      nco_crcf_mix_down(nco_coarse[1], _x[1][i], &y1);
+      nco_crcf_step(nco_coarse[1]);
+
+      curr_rx_sig[0][rx_sig_index] = y0;
+      curr_rx_sig[1][rx_sig_index] = y1;
+      rx_sig_index++;
+
+      if(PRINT_PHASES) {
+        float phase_1 = std::arg(y0);
+        float phase_2 = std::arg(y1);
+        printf("Channel 1 Phase:%8.4f, Channel 2 Phase:%8.4f, Phase Diffs:%8.4f\n",
+            phase_1, phase_2, phase_2 - phase_1);
+      }
+
+      int ch1_flag = detector_cccf_correlate(frame_detector[1][0],
+                                             y0,
+                                             &tau_hat[1][0],
+                                             &dphi_hat[1][0],
+                                             &gamma_hat[1][0]);
+      int ch2_flag = detector_cccf_correlate(frame_detector[1][1],
+                                             y1,
+                                             &tau_hat[1][1],
+                                             &dphi_hat[1][1],
+                                             &gamma_hat[1][1]);
+ 
+      if(ch1_flag) {
+        frame_detect_flag[1][0] = true;
+        training_match_index[1][0] = i;
+      }
+      if(ch2_flag) {
+        frame_detect_flag[1][1] = true;
+        training_match_index[1][1] = i;
+      }
+
+      if(frame_detect_flag[1][0] and frame_detect_flag[1][1]) {
+
+        float delta_f = (dphi_hat[0][0] + dphi_hat[0][1])/2.0;
+        if(fabs(delta_f) > 0.001) {
+          nco_coarse_freq += (dphi_hat[1][0] + dphi_hat[1][1])/2.0;
+          nco_crcf_set_frequency(nco_coarse[0], nco_coarse_freq);
+          nco_crcf_set_frequency(nco_coarse[1], nco_coarse_freq);
+        }
+        
+        if(PRINT_STATS_TX2RX1) {
+          printf("***** TX2 RX1 Statistics! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB, index:%u, seq_n:%lu\n",
+                 tau_hat[1][0], dphi_hat[1][0], 20*log10f(gamma_hat[1][0]), training_match_index[1][0],
+                 training_seq_n[1][0]++);
+        }
+        if(PRINT_STATS_TX2RX2) {
+          printf("***** TX2 RX2 Statistics! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB, index:%u, seq_n:%lu\n",
+                 tau_hat[1][1], dphi_hat[1][1], 20*log10f(gamma_hat[1][1]), training_match_index[1][1],
+                 training_seq_n[1][1]++);
+        }
+        if(PRINT_STAT_DIFFS) {
+          printf("***** RX1 RX2 Defferences! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
+                 tau_hat[1][0]-tau_hat[1][1], 
+                 dphi_hat[1][0]-dphi_hat[1][1], 
+                 20*log10f(gamma_hat[1][0]/gamma_hat[1][1]));
+        }
+
+  //      training_match_index_diffs2();
+        pushpn();
+      }
+    }
+
+    // reads the already stored data and pushes through the matche filter
+    // should check if we should proceed to execute_rxpn / sync_pn.
+    void framesync::pushpn()
+    {
+      std::complex<float> mf_in[2];
+      std::complex<float> mf_out[2];
+      int start; 
+
+      printf("training_match_index[0][0] :%6u\n", training_match_index[0][0]);
+      printf("training_match_index[0][1] :%6u\n", training_match_index[0][1]);
+      printf("training_match_index[1][0] :%6u\n", training_match_index[1][0]);
+      printf("training_match_index[1][1] :%6u\n", training_match_index[1][1]);
+      printf("              rx_sig_index :%6u\n", rx_sig_index);
+
+      if(training_match_index[0][0] > training_match_index[1][0] and
+         training_match_index[0][1] > training_match_index[1][1])
+      {
+        start = -training_seq_len*k - frame_len +
+                ((training_match_index[0][0] < training_match_index[0][1])?
+                  training_match_index[0][0] : training_match_index[0][1]);
+      }
+      else if(training_match_index[0][0] < training_match_index[1][0] and
+              training_match_index[0][1] < training_match_index[1][1])
+      {
+        start = -training_seq_len*k +
+                ((training_match_index[0][0] < training_match_index[0][1])?
+                  training_match_index[0][0] : training_match_index[0][1]);
+      }
+      else {
+        printf("***** I smell somthing fishy\n");
+        assert(false);
+      }
+      printf("               start_index :%6u\n", start);
+
+      for(int i = start; i < rx_sig_index; i++)
+      {
+        mf_in[0] = curr_rx_sig[0][i];
+        mf_in[1] = curr_rx_sig[1][i];
+
+        if(update_symsync(mf_in, mf_out))
+        {
+          windowcf_push(pn_window_unscaled[0], mf_out[0]);
+          windowcf_push(pn_window_unscaled[1], mf_out[1]);
+          windowcf_push(pn_window[0], std::polar(1.0f, std::arg(mf_out[0])));
+          windowcf_push(pn_window[1], std::polar(1.0f, std::arg(mf_out[1])));
+          pn_count++;
+          if(pn_count == 3*training_seq_len + 2*m)
+            sync_pn();
+        }
+      }
+      if(state == STATE_DETECTFRAME2)
+      {
+        printf("Setting state to RXPN\n");
+        state = STATE_RXPN;
+      }
+    }
+
+    // this checks if we have actually received the pn sequence and the
+    // phasing sequence. This is fired when pn_count reaches full. It should 
+    // check if the values stored in the pn_window actually corresponds to 
+    // pn sequences. If not decrement the pn_count. If they match, then 
+    // proceed to rx_payload.
+    // This should find out the nco_fine offset and set the values accordingly.
+    void framesync::sync_pn()
+    {
+      std::complex<float> dotp[2][2];
+      std::complex<float> * pn_window_ptr[2];
+      bool sync;
+      windowcf_read(pn_window[0], &pn_window_ptr[0]);
+      windowcf_read(pn_window[1], &pn_window_ptr[1]);
+
+      dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[0], &dotp[0][0]);
+      dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[1], &dotp[0][1]);
+      dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[0] + 66, &dotp[1][0]);
+      dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[1] + 66, &dotp[1][1]);
+
+      if(std::abs(dotp[0][0]) > 10.0) {
+        printf("dot products [0][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+            std::real(dotp[0][0]), std::imag(dotp[0][0]), std::abs(dotp[0][0]));
+        printf("dot products [0][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+            std::real(dotp[0][1]), std::imag(dotp[0][1]), std::abs(dotp[0][1]));
+        printf("dot products [1][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+            std::real(dotp[1][0]), std::imag(dotp[1][0]), std::abs(dotp[1][0]));
+        printf("dot products [1][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+            std::real(dotp[1][1]), std::imag(dotp[1][1]), std::abs(dotp[1][1]));
+      }
+
+      sync = (std::abs(dotp[0][1]) > 50.0);
+
+      if(sync){
+
+        printf("dot products [0][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+            std::real(dotp[0][0]), std::imag(dotp[0][0]), std::abs(dotp[0][0]));
+        printf("dot products [0][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+            std::real(dotp[0][1]), std::imag(dotp[0][1]), std::abs(dotp[0][1]));
+        printf("dot products [1][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+            std::real(dotp[1][0]), std::imag(dotp[1][0]), std::abs(dotp[1][0]));
+        printf("dot products [1][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+            std::real(dotp[1][1]), std::imag(dotp[1][1]), std::abs(dotp[1][1]));
+
+        if(SHOW_OTHER_DOTS) {
+          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[0] + 1, &dotp[0][0]);
+          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[1] + 1, &dotp[0][1]);
+          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[0] + 67, &dotp[1][0]);
+          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[1] + 67, &dotp[1][1]);
+          printf("dot products [0][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[0][0]), std::imag(dotp[0][0]), std::abs(dotp[0][0]));
+          printf("dot products [0][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[0][1]), std::imag(dotp[0][1]), std::abs(dotp[0][1]));
+          printf("dot products [1][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[1][0]), std::imag(dotp[1][0]), std::abs(dotp[1][0]));
+          printf("dot products [1][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[1][1]), std::imag(dotp[1][1]), std::abs(dotp[1][1]));
+          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[0] + 2, &dotp[0][0]);
+          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[1] + 2, &dotp[0][1]);
+          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[0] + 68, &dotp[1][0]);
+          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[1] + 68, &dotp[1][1]);
+          printf("dot products [0][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[0][0]), std::imag(dotp[0][0]), std::abs(dotp[0][0]));
+          printf("dot products [0][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[0][1]), std::imag(dotp[0][1]), std::abs(dotp[0][1]));
+          printf("dot products [1][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[1][0]), std::imag(dotp[1][0]), std::abs(dotp[1][0]));
+          printf("dot products [1][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[1][1]), std::imag(dotp[1][1]), std::abs(dotp[1][1]));
+          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[0] + 3, &dotp[0][0]);
+          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[1] + 3, &dotp[0][1]);
+          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[0] + 65, &dotp[1][0]);
+          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[1] + 65, &dotp[1][1]);
+          printf("dot products [0][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[0][0]), std::imag(dotp[0][0]), std::abs(dotp[0][0]));
+          printf("dot products [0][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[0][1]), std::imag(dotp[0][1]), std::abs(dotp[0][1]));
+          printf("dot products [1][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[1][0]), std::imag(dotp[1][0]), std::abs(dotp[1][0]));
+          printf("dot products [1][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[1][1]), std::imag(dotp[1][1]), std::abs(dotp[1][1]));
+        }
+
+        // #FIXME
+        {
+          std::complex<float> phasing_symb;
+          std::complex<float> dphi_metric[2][2] = {{0.0f, 0.0f}, {0.0f, 0.0f}};
+          std::complex<float> r0[2][2] = {{0.0f, 0.0f}, {0.0f, 0.0f}};
+          std::complex<float> r1[2][2] = {{0.0f, 0.0f}, {0.0f, 0.0f}};
+  
+          for(unsigned int i = 0; i < training_seq_len; i++)
+          {
+            r0[0][0] = r1[0][0];
+            r0[0][1] = r1[0][1];
+            r0[1][0] = r1[1][0];
+            r0[1][1] = r1[1][1];
+            r1[0][0] = (*(pn_window_ptr[0] +  0 + i))*preamble_pn[0][i];
+            r1[0][1] = (*(pn_window_ptr[1] +  0 + i))*preamble_pn[0][i];
+            r1[1][0] = (*(pn_window_ptr[0] + 66 + i))*preamble_pn[1][i];
+            r1[1][1] = (*(pn_window_ptr[1] + 66 + i))*preamble_pn[1][i];
+            dphi_metric[0][0] += r1[0][0]*std::conj(r0[0][0]);
+            dphi_metric[0][1] += r1[0][1]*std::conj(r0[0][1]);
+            dphi_metric[1][0] += r1[1][0]*std::conj(r0[1][0]);
+            dphi_metric[1][1] += r1[1][1]*std::conj(r0[1][1]);
+          }
+  
+          float dphi_hat[2][2] = {{std::arg(dphi_metric[0][0]),
+                                   std::arg(dphi_metric[0][1])},
+                                  {std::arg(dphi_metric[1][0]),
+                                   std::arg(dphi_metric[1][1])}};
+  
+          std::complex<float> theta_metric[2][2] = {{0.0f, 0.0f}, {0.0f, 0.0f}};
+  
+          for(unsigned int i = 0; i < training_seq_len; i++)
+          {
+            theta_metric[0][0] += (*(pn_window_ptr[0] +  0 + i))*std::exp(-dphi_hat[0][0]*i)*preamble_pn[0][i];
+            theta_metric[0][1] += (*(pn_window_ptr[1] +  0 + i))*std::exp(-dphi_hat[0][1]*i)*preamble_pn[0][i];
+            theta_metric[1][0] += (*(pn_window_ptr[0] + 66 + i))*std::exp(-dphi_hat[1][0]*i)*preamble_pn[1][i];
+            theta_metric[1][1] += (*(pn_window_ptr[1] + 66 + i))*std::exp(-dphi_hat[1][1]*i)*preamble_pn[1][i];
+          }
+
+          float theta_hat[2][2] = {{std::arg(theta_metric[0][0]),
+                                    std::arg(theta_metric[0][1])},
+                                   {std::arg(theta_metric[1][0]),
+                                    std::arg(theta_metric[1][1])}};
+  
+          printf("dphi_metric[0][0] :%8.4f + %8.4fi\n",
+                 std::real(dphi_metric[0][0]), std::imag(dphi_metric[0][0]));
+  
+          printf("dphi_metric[0][1] :%8.4f + %8.4fi\n",
+                 std::real(dphi_metric[0][1]), std::imag(dphi_metric[0][1]));
+          
+          printf("dphi_metric[1][0] :%8.4f + %8.4fi\n",
+                 std::real(dphi_metric[1][0]), std::imag(dphi_metric[1][0]));
+          
+          printf("dphi_metric[1][1] :%8.4f + %8.4fi\n",
+                 std::real(dphi_metric[1][1]), std::imag(dphi_metric[1][1]));
+  
+          printf("dphi_hat[0][0] :%8.4f\n", dphi_hat[0][0]);
+          printf("dphi_hat[0][1] :%8.4f\n", dphi_hat[0][1]);
+          printf("dphi_hat[1][0] :%8.4f\n", dphi_hat[1][0]);
+          printf("dphi_hat[1][1] :%8.4f\n", dphi_hat[1][1]);
+          
+          printf("theta_metric[0][0] :%8.4f + %8.4fi\n",
+                 std::real(theta_metric[0][0]), std::imag(theta_metric[0][0]));
+          
+          printf("theta_metric[0][1] :%8.4f + %8.4fi\n",
+                 std::real(theta_metric[0][1]), std::imag(theta_metric[0][1]));
+          
+          printf("theta_metric[1][0] :%8.4f + %8.4fi\n",
+                 std::real(theta_metric[1][0]), std::imag(theta_metric[1][0]));
+          
+          printf("theta_metric[1][1] :%8.4f + %8.4fi\n",
+                 std::real(theta_metric[1][1]), std::imag(theta_metric[1][1]));
+          
+          printf("theta_hat[0][0] :%8.4f\n", theta_hat[0][0]);
+          printf("theta_hat[0][1] :%8.4f\n", theta_hat[0][1]);
+          printf("theta_hat[1][0] :%8.4f\n", theta_hat[1][0]);
+          printf("theta_hat[1][1] :%8.4f\n", theta_hat[1][1]);
+        }
+
+        state = STATE_RXPAYLOAD;
+      }
+      else
+      {
+        pn_count--;
+      }
+    }
+
+    // this should do the maximum ratio combining of the values stored in the
+    // payload buffer.
+    void framesync::decode_payload()
+    {
+        reset();
+    }
+
+    void framesync::execute_rxpn(std::complex<float> ** _x, unsigned int i)
+    {
+      std::complex<float> mf_in[2];
+      std::complex<float> mf_out[2];
+
+      nco_crcf_mix_down(nco_coarse[0], _x[0][i], &mf_in[0]);
+      nco_crcf_step(nco_coarse[0]);
+      nco_crcf_mix_down(nco_coarse[1], _x[1][i], &mf_in[1]);
+      nco_crcf_step(nco_coarse[1]);
+
+      curr_rx_sig[0][rx_sig_index] = mf_in[0];
+      curr_rx_sig[1][rx_sig_index] = mf_in[1];
+      rx_sig_index++;
+
+      if(update_symsync(mf_in, mf_out))
+      {
+        windowcf_push(pn_window_unscaled[0], mf_out[0]);
+        windowcf_push(pn_window_unscaled[1], mf_out[1]);
+        windowcf_push(pn_window[0], std::polar(1.0f, std::arg(mf_out[0])));
+        windowcf_push(pn_window[1], std::polar(1.0f, std::arg(mf_out[1])));
+        pn_count++;
+        if(pn_count == 3*training_seq_len + 2*m)
+          sync_pn();
+      }
+    }
+
+    void framesync::execute_rxpayload(std::complex<float> ** _x, unsigned int i)
+    {
+      std::complex<float> mf_in[2];
+      std::complex<float> mf_out[2];
+
+      nco_crcf_mix_down(nco_coarse[0], _x[0][i], &mf_in[0]);
+      nco_crcf_step(nco_coarse[0]);
+      nco_crcf_mix_down(nco_coarse[1], _x[1][i], &mf_in[1]);
+      nco_crcf_step(nco_coarse[1]);
+
+      curr_rx_sig[0][rx_sig_index] = mf_in[0];
+      curr_rx_sig[1][rx_sig_index] = mf_in[1];
+      rx_sig_index++;
+
+      if(update_symsync(mf_in, mf_out))
+      {
+        windowcf_push(payload_window[0], mf_out[0]);
+        windowcf_push(payload_window[1], mf_out[1]);
+        payload_count++;
+        if(payload_count == payload_len)
+          decode_payload();
+      }
+    }
+
+    int framesync::update_symsync(std::complex<float> * in,
+                                  std::complex<float> * out)
+    {
+      firpfb_crcf_push(mf[0], in[0]);
+      firpfb_crcf_push(dmf[0], in[0]);
+      firpfb_crcf_push(mf[1], in[1]);
+      firpfb_crcf_push(dmf[1], in[1]);
+
+      std::complex<float> mf_out[2];
+      std::complex<float> dmf_out[2];
+
+      int sample_available = 0;
+
+      if (pfb_timer <= 0) {
+        sample_available = 1;
+        pfb_timer = k;
+        firpfb_crcf_execute(mf[0], pfb_index, &mf_out[0]);
+        firpfb_crcf_execute(mf[1], pfb_index, &mf_out[1]);
+        firpfb_crcf_execute(dmf[0], pfb_index, &dmf_out[0]);
+        firpfb_crcf_execute(dmf[1], pfb_index, &dmf_out[1]);
+
+        // update filtered timing error
+        // hi  bandwidth parameters: {0.92, 1.20}, about 100 symbols settling time
+        // med bandwidth parameters: {0.98, 0.20}, about 200 symbols settling time
+        // lo  bandwidth parameters: {0.99, 0.05}, about 500 symbols settling time
+        pfb_q = 0.99f*pfb_q + 0.025f*std::real(std::conj(mf_out[0])*dmf_out[0] + 
+                                               std::conj(mf_out[1])*dmf_out[1]);
+
+        pfb_soft += pfb_q;
+        pfb_index = roundf(pfb_soft);
+
+        while(pfb_index < 0) {
+          pfb_index += npfb;
+          pfb_soft  += npfb;
+          pfb_timer--;
+        }
+        while(pfb_index > (npfb - 1)) {
+          pfb_index -= npfb;
+          pfb_soft  -= npfb;
+          pfb_timer++;
+        }
+      }
+      pfb_timer--;
+
+      nco_crcf_mix_down(nco_fine[0], mf_out[0], &mf_out[0]);
+      nco_crcf_step(nco_fine[0]);
+      nco_crcf_mix_down(nco_fine[1], mf_out[0], &mf_out[0]);
+      nco_crcf_step(nco_fine[1]);
+
+      out[0] = mf_out[0];
+      out[1] = mf_out[1];
+      return sample_available;
+    }
+
+    void framesync::find_channel_diffs() {
+      printf("Estimated index for channel 1 :%u\n",
+             training_match_index[0][0] + 
+             estimator->find_corr_index(curr_rx_sig[0], training_match_index[0][0]));
+      printf("Estimated index for channel 2 :%u\n",
+             training_match_index[0][1] + 
+             estimator->find_corr_index(curr_rx_sig[1], training_match_index[0][1]));
     }
 
     void framesync::update_training_sequence_n() {
@@ -213,7 +758,7 @@ namespace liquid {
       }
     }
 
-    void framesync::training_match_index_diffs()
+    void framesync::training_match_index_diffs1()
     {
       if(training_match_index[0][0] > training_match_index[1][0] and
          training_match_index[0][1] > training_match_index[1][1])
@@ -235,175 +780,26 @@ namespace liquid {
       }
     }
 
-    void framesync::execute_seekpn1(std::complex<float> ** _x, unsigned int i)
+    void framesync::training_match_index_diffs2()
     {
-      nco_crcf_mix_down(nco_coarse[0], _x[0][i], &_x[0][i]);
-      nco_crcf_step(nco_coarse[0]);
-      nco_crcf_mix_down(nco_coarse[1], _x[1][i], &_x[1][i]);
-      nco_crcf_step(nco_coarse[1]);
-
-      windowcf_push(buffer[0], _x[0][i]);
-      windowcf_push(buffer[1], _x[1][i]);
-
-      int ch1_flag = detector_cccf_correlate(frame_detector[0][0],
-                                             _x[0][i],
-                                             &tau_hat[0][0],
-                                             &dphi_hat[0][0],
-                                             &gamma_hat[0][0]);
-      int ch2_flag = detector_cccf_correlate(frame_detector[0][1],
-                                             _x[1][i],
-                                             &tau_hat[0][1],
-                                             &dphi_hat[0][1],
-                                             &gamma_hat[0][1]);
- 
-      if(ch1_flag) {
-        frame_detect_flag[0][0] = true;
-        training_match_index[0][0] = i;
-        if(PRINT_STATS_TX1RX1) {
-          printf("***** TX1 RX1 Statistics! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB, index:%u, seq_n:%lu\n",
-                 tau_hat[0][0], dphi_hat[0][0], 20*log10f(gamma_hat[0][0]), i,
-                 training_seq_n[0][0]++);
-        }
+      if(training_match_index[1][0] > training_match_index[0][0] and
+         training_match_index[1][1] > training_match_index[0][1])
+      {
+        printf("***** Index Diffs! Channel 1:%u, Channel 2:%u\n",
+               frame_len - training_match_index[1][0] + training_match_index[0][0],
+               frame_len - training_match_index[1][1] + training_match_index[0][1]);
       }
-      if(ch2_flag) {
-        frame_detect_flag[0][1] = true;
-        training_match_index[0][1] = i;
-        if(PRINT_STATS_TX1RX2) {
-          printf("***** TX1 RX2 Statistics! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB, index:%u, seq_n:%lu\n",
-                 tau_hat[0][1], dphi_hat[0][1], 20*log10f(gamma_hat[0][1]), i,
-                 training_seq_n[0][1]++);
-        }
+      else if(training_match_index[1][0] < training_match_index[0][0] and
+              training_match_index[1][1] < training_match_index[0][1])
+      {
+        printf("***** Index Diffs! Channel 1:%u, Channel 2:%u\n",
+               0 - training_match_index[1][0] + training_match_index[0][0],
+               0 - training_match_index[1][1] + training_match_index[0][1]);
       }
-
-      if(frame_detect_flag[0][0] and frame_detect_flag[0][1]) {
-        float delta_f = (dphi_hat[0][0] + dphi_hat[0][1])/2.0;
-        if(fabs(delta_f) > 0.001) {
-          nco_coarse_freq += delta_f;
-          nco_crcf_set_frequency(nco_coarse[0], nco_coarse_freq);
-          nco_crcf_set_frequency(nco_coarse[1], nco_coarse_freq);
-        }
-
-        if(PRINT_STAT_DIFFS) {
-          printf("***** RX1 RX2 Defferences! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
-                 tau_hat[0][0]-tau_hat[0][1], 
-                 dphi_hat[0][0]-dphi_hat[0][1], 
-                 20*log10f(gamma_hat[0][0]/gamma_hat[0][1]));
-        }
-
-        state = STATE_DETECTFRAME2;
+      else {
+        printf("***** I smell somthing fishy\n");
+        assert(false);
       }
     }
-
-    void framesync::execute_seekpn2(std::complex<float> ** _x, unsigned int i)
-    {
-      nco_crcf_mix_down(nco_coarse[0], _x[0][i], &_x[0][i]);
-      nco_crcf_step(nco_coarse[0]);
-      nco_crcf_mix_down(nco_coarse[1], _x[1][i], &_x[1][i]);
-      nco_crcf_step(nco_coarse[1]);
-
-      windowcf_push(buffer[0], _x[0][i]);
-      windowcf_push(buffer[1], _x[1][i]);
-
-      int ch1_flag = detector_cccf_correlate(frame_detector[1][0],
-                                             _x[0][i],
-                                             &tau_hat[1][0],
-                                             &dphi_hat[1][0],
-                                             &gamma_hat[1][0]);
-      int ch2_flag = detector_cccf_correlate(frame_detector[1][1],
-                                             _x[1][i],
-                                             &tau_hat[1][1],
-                                             &dphi_hat[1][1],
-                                             &gamma_hat[1][1]);
- 
-      if(ch1_flag) {
-        frame_detect_flag[1][0] = true;
-        training_match_index[1][0] = i;
-        if(PRINT_STATS_TX2RX1) {
-          printf("***** TX2 RX1 Statistics! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB, index:%u, seq_n:%lu\n",
-                 tau_hat[1][0], dphi_hat[1][0], 20*log10f(gamma_hat[1][0]), i,
-                 training_seq_n[1][0]++);
-        }
-      }
-      if(ch2_flag) {
-        frame_detect_flag[1][1] = true;
-        training_match_index[1][1] = i;
-        if(PRINT_STATS_TX2RX2) {
-          printf("***** TX2 RX2 Statistics! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB, index:%u, seq_n:%lu\n",
-                 tau_hat[1][1], dphi_hat[1][1], 20*log10f(gamma_hat[1][1]), i,
-                 training_seq_n[1][1]++);
-        }
-      }
-
-      if(frame_detect_flag[1][0] and frame_detect_flag[1][1]) {
-
-        float delta_f = (dphi_hat[0][0] + dphi_hat[0][1])/2.0;
-        if(fabs(delta_f) > 0.001) {
-          nco_coarse_freq += (dphi_hat[1][0] + dphi_hat[1][1])/2.0;
-          nco_crcf_set_frequency(nco_coarse[0], nco_coarse_freq);
-          nco_crcf_set_frequency(nco_coarse[1], nco_coarse_freq);
-        }
-        
-        if(PRINT_STAT_DIFFS) {
-          printf("***** RX1 RX2 Defferences! tau-hat:%8.4f, dphi-hat:%8.4f, gamma:%8.2f dB\n",
-                 tau_hat[1][0]-tau_hat[1][1], 
-                 dphi_hat[1][0]-dphi_hat[1][1], 
-                 20*log10f(gamma_hat[1][0]/gamma_hat[1][1]));
-        }
-        training_match_index_diffs();
-        reset();
-      }
-    }
-
-    void framesync::pushpn1()
-    {
-      ;
-    }
-
-    int framesync::find_index_of_corr() {
-      return 0;
-    }
-
-    void framesync::execute_rxpn1(std::complex<float> ** _x, unsigned int i)
-    {
-    }
-
-    int framesync::update_symsync1(std::complex<float>   _x,
-                           std::complex<float> * _y)
-    {
-      return 0;
-    }
-
-    void framesync::syncpn1()
-    {
-      ;
-    }
-
-    void framesync::pushpn2()
-    {
-      ;
-    }
-
-    void framesync::execute_rxpn2(std::complex<float> ** _x, unsigned int i)
-    {
-      ;
-    }
-
-    int framesync::update_symsync2(std::complex<float>   _x,
-                           std::complex<float> * _y)
-    {
-      return 0;
-    }
-
-    void framesync::syncpn2()
-    {
-      ;
-    }
-
-
-    void framesync::execute_rxpayload(std::complex<float> ** _x, unsigned int i)
-    {
-      ;
-    }
-
   }   // namespace mimo
 }     // namespace liquid

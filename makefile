@@ -24,6 +24,8 @@ library_src		:=							\
   src/mimo/framesync.cc				\
   src/alamouti/framegen.cc		\
   src/alamouti/framesync.cc		\
+  src/alamouti/channel_estimator.cc		\
+  src/alamouti/delay.cc				\
 	src/simo/framegen.cc				\
   src/simo/framesync.cc				\
   src/math/liquid_math.cc			\
