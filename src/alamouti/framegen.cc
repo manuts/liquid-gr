@@ -27,17 +27,15 @@ namespace liquid {
       pn1 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*training_seq_len);
       pn2 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*training_seq_len);
       payload = (std::complex<float> *)malloc(sizeof(std::complex<float>)*payload_len);
-      msequence ms1 = msequence_create(6, 0x0043, 1);
-      msequence ms2 = msequence_create(6, 0x005b, 1);
-      msequence ms3 = msequence_create(7, 0x0089, 1);
+      msequence ms1 = msequence_create(6, 0x005B, 1);
+      msequence ms2 = msequence_create(6, 0x0067, 1);
+      msequence ms3 = msequence_create(10, 0x0409, 1);
       for (unsigned int i = 0; i < training_seq_len; i++){
         pn1[i] = (msequence_advance(ms1)) ? 1.0f : -1.0f;
         pn2[i] = (msequence_advance(ms2)) ? 1.0f : -1.0f;
       }
       for (unsigned int i = 0; i < payload_len; i++) {
-//        payload[i] = (msequence_advance(ms3)) ? 1.0f : -1.0f;
-        payload[i] = (rand()%2) ? 1.0f : -1.0f;
-//        payload[i] = (rand()%2) ? 0.0f : 0.0f;
+        payload[i] = (msequence_advance(ms3)) ? -1.0f : 1.0f;
       }
       msequence_destroy(ms1);
       msequence_destroy(ms2);
@@ -46,7 +44,7 @@ namespace liquid {
       k = _k;
       m = _m;
       beta = _beta;
-      gain1 = 0.00;
+      gain1 = 0.25;
       gain2 = 0.25;
 
       frame_len = k*(3*training_seq_len + payload_len + 3*m);
@@ -92,10 +90,10 @@ namespace liquid {
       for(unsigned int i = 0; i < training_seq_len; i++)
       {
         firinterp_crcf_execute(interp1, pn1[i], sps1);
-        firinterp_crcf_execute(interp2, liquid::math::Z, sps2);
+        firinterp_crcf_execute(interp2, 0.0f, sps2);
         for(unsigned int sps_count = 0; (sps_count < k); sps_count++) {
-          tx_sig[0][count] = sps1[sps_count];
-          tx_sig[1][count] = sps2[sps_count];
+          tx_sig[0][count] = sps1[sps_count]*gain1;
+          tx_sig[1][count] = sps2[sps_count]*gain2;
           count++;
         }
       }
@@ -103,8 +101,8 @@ namespace liquid {
       // send training_seq_len zeros to settle
       for(unsigned int i = 0; i < m; i++)
       {
-        firinterp_crcf_execute(interp1, 0.0f, sps1);
-        firinterp_crcf_execute(interp2, 0.0f, sps2);
+        firinterp_crcf_execute(interp1, -1.0f, sps1);
+        firinterp_crcf_execute(interp2, -1.0f, sps2);
         for(unsigned int sps_count = 0; (sps_count < k); sps_count++) {
           tx_sig[0][count] = sps1[sps_count]*gain1;
           tx_sig[1][count] = sps2[sps_count]*gain2;
@@ -115,7 +113,7 @@ namespace liquid {
       // transmit pn2 on channel 2
       for(unsigned int i = 0; i < training_seq_len; i++)
       {
-        firinterp_crcf_execute(interp1, liquid::math::Z, sps1);
+        firinterp_crcf_execute(interp1, 0.0f, sps1);
         firinterp_crcf_execute(interp2, pn2[i], sps2);
         for(unsigned int sps_count = 0; (sps_count < k); sps_count++) {
           tx_sig[0][count] = sps1[sps_count]*gain1;
@@ -127,7 +125,7 @@ namespace liquid {
       // send training_seq_len zeros to settle
       for(unsigned int i = 0; i < m; i++)
       {
-        firinterp_crcf_execute(interp1, 0.0f, sps1);
+        firinterp_crcf_execute(interp1, -1.0f, sps1);
         firinterp_crcf_execute(interp2, 0.0f, sps2);
         for(unsigned int sps_count = 0; (sps_count < k); sps_count++) {
           tx_sig[0][count] = sps1[sps_count]*gain1;
@@ -142,7 +140,7 @@ namespace liquid {
       {
         phasing_symb = (i % 2) ? 1.0f : -1.0f;
         firinterp_crcf_execute(interp1, phasing_symb, sps1);
-        firinterp_crcf_execute(interp2, phasing_symb, sps2);
+        firinterp_crcf_execute(interp2, 0.0f, sps2);
         for(unsigned int sps_count = 0; (sps_count < k); sps_count++) {
           tx_sig[0][count] = sps1[sps_count]*gain1;
           tx_sig[1][count] = sps2[sps_count]*gain2;
@@ -150,20 +148,10 @@ namespace liquid {
         }
       }
 
-      // transmit alamouti encoded symbols
-      for(unsigned int i = 0; i < payload_len; i += 2)
+      for (unsigned int i = 0; i < payload_len; i++)
       {
-        // send u1 u2
-        firinterp_crcf_execute(interp1, payload[i + 0], sps1);
-        firinterp_crcf_execute(interp2, payload[i + 1], sps2);
-        for(unsigned int sps_count = 0; (sps_count < k); sps_count++) {
-          tx_sig[0][count] = sps1[sps_count]*gain1;
-          tx_sig[1][count] = sps2[sps_count]*gain2;
-          count++;
-        }
-        // send -conj(u2) + conj(u1)
-        firinterp_crcf_execute(interp1, -std::conj(payload[i + 1]), sps1);
-        firinterp_crcf_execute(interp2, std::conj(payload[i + 0]), sps2);
+        firinterp_crcf_execute(interp1, payload[i], sps1);
+        firinterp_crcf_execute(interp2, 0.0f, sps2);
         for(unsigned int sps_count = 0; (sps_count < k); sps_count++) {
           tx_sig[0][count] = sps1[sps_count]*gain1;
           tx_sig[1][count] = sps2[sps_count]*gain2;
@@ -174,8 +162,8 @@ namespace liquid {
       // send m zeros to settle
       for(unsigned int i = 0; i < m; i++)
       {
-        firinterp_crcf_execute(interp1, liquid::math::Z, sps1);
-        firinterp_crcf_execute(interp2, liquid::math::Z, sps2);
+        firinterp_crcf_execute(interp1, -1.0f, sps1);
+        firinterp_crcf_execute(interp2, 0.0f, sps2);
         for(unsigned int sps_count = 0; (sps_count < k); sps_count++) {
           tx_sig[0][count] = sps1[sps_count]*gain1;
           tx_sig[1][count] = sps2[sps_count]*gain2;

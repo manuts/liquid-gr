@@ -166,6 +166,8 @@ namespace liquid {
         //
         channel_estimator * estimator;
         unsigned long int training_seq_n[2][2];
+        unsigned long int num_frames_detected;
+        unsigned long int errors[2];
         int training_match_index[2][2];
         unsigned int pn_count;
         unsigned int payload_count;
@@ -189,10 +191,17 @@ namespace liquid {
         std::complex<float> * curr_rx_sig[2];
         int rx_sig_index;
         float nco_coarse_freq;
-        float nco_fine_freq;
-        float nco_fine_phase;
+        float nco_fine_freq[2];
+        float nco_fine_phase[2];
         nco_crcf nco_coarse[2];            // coarse carrier frequency recovery
         nco_crcf nco_fine[2];              // fine carrier recovery (after demod)
+        float pow[2];
+
+        FILE * out_files[2];
+
+        modem demod[2];
+        unsigned char * rx_payload[2];
+        unsigned char * expected_payload;
         
         // timing recovery objects, states
         unsigned int k;                  // interp samples/symbol (fixed at 2)
@@ -249,6 +258,10 @@ namespace liquid {
         void work(std::complex<float> **, unsigned int);
         unsigned int get_frame_len();
         void print_frame_struct();
+        unsigned long int get_num_frames_detected();
+        unsigned long int get_num_errors1();
+        unsigned long int get_num_errors2();
+        unsigned long int get_num_bits_detected();
     };
   }
 }

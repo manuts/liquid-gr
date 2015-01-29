@@ -16,13 +16,15 @@
  */
 #include "alamouti.h"
 
-#define PRINT_STATS_TX1RX1  false
-#define PRINT_STATS_TX1RX2  false
-#define PRINT_STATS_TX2RX1  false
-#define PRINT_STATS_TX2RX2  false
+#define PRINT_STATS_TX1RX1  true 
+#define PRINT_STATS_TX1RX2  true 
+#define PRINT_STATS_TX2RX1  true 
+#define PRINT_STATS_TX2RX2  true 
 #define PRINT_STAT_DIFFS    false
 #define PRINT_PHASES        false
 #define SHOW_OTHER_DOTS     true
+#define PRINT_PAYLOAD       false
+#define USE_AVERAGE_METRIC  false
 
 namespace liquid {
   namespace alamouti {
@@ -33,18 +35,27 @@ namespace liquid {
       training_seq_len = 63;
       payload_len = 1024;
 
-      msequence ms1 = msequence_create(6, 0x0043, 1);
-      msequence ms2 = msequence_create(6, 0x005b, 1);
+      msequence ms1 = msequence_create(6, 0x005B, 1);
+      msequence ms2 = msequence_create(6, 0x0067, 1);
+      msequence ms3 = msequence_create(10, 0x0409, 1);
+
       preamble_pn[0] = (std::complex<float> *)malloc(sizeof(std::complex<float>)*training_seq_len); 
       preamble_pn[1] = (std::complex<float> *)malloc(sizeof(std::complex<float>)*training_seq_len); 
       preamble_rx[0][0] = (std::complex<float> *)malloc(sizeof(std::complex<float>)*training_seq_len); 
       preamble_rx[0][1] = (std::complex<float> *)malloc(sizeof(std::complex<float>)*training_seq_len); 
       preamble_rx[1][0] = (std::complex<float> *)malloc(sizeof(std::complex<float>)*training_seq_len); 
       preamble_rx[1][1] = (std::complex<float> *)malloc(sizeof(std::complex<float>)*training_seq_len); 
+
+      expected_payload = (unsigned char *)malloc(sizeof(unsigned char)*payload_len);
       for (unsigned int i = 0; i < training_seq_len; i++){
         preamble_pn[0][i] = (msequence_advance(ms1)) ? 1.0f : -1.0f;
         preamble_pn[1][i] = (msequence_advance(ms2)) ? 1.0f : -1.0f;
       }
+
+      for (unsigned int i = 0; i < payload_len; i++) {
+        expected_payload[i] = msequence_advance(ms3);
+      }
+
       msequence_destroy(ms1);
       msequence_destroy(ms2);
 
@@ -85,6 +96,10 @@ namespace liquid {
       frame_detector[1][0] = detector_cccf_create(seq2, k*training_seq_len, threshold, dphi_max);
       frame_detector[1][1] = detector_cccf_create(seq2, k*training_seq_len, threshold, dphi_max);
 
+      rx_payload[0] = (unsigned char *)malloc(sizeof(unsigned char)*payload_len);
+      rx_payload[1] = (unsigned char *)malloc(sizeof(unsigned char)*payload_len);
+      demod[0] = modem_create(LIQUID_MODEM_BPSK);
+      demod[1] = modem_create(LIQUID_MODEM_BPSK);
       payload_window[0] = windowcf_create(payload_len);
       payload_window[1] = windowcf_create(payload_len);
       pn_window[0] = windowcf_create(3*training_seq_len + 2*m);
@@ -108,7 +123,10 @@ namespace liquid {
       dmf[1]  = firpfb_crcf_create_drnyquist(LIQUID_FIRFILT_ARKAISER,npfb,k,m,beta);
 
       nco_coarse_freq = 0.0f;
-      nco_fine_freq = 0.0f;
+      nco_fine_freq[0] = 0.0f;
+      nco_fine_freq[1] = 0.0f;
+      nco_fine_phase[0] = 0.0f;
+      nco_fine_phase[1] = 0.0f;
       nco_coarse[0] = nco_crcf_create(LIQUID_NCO);
       nco_coarse[1] = nco_crcf_create(LIQUID_NCO);
       nco_fine[0]   = nco_crcf_create(LIQUID_VCO);
@@ -142,6 +160,13 @@ namespace liquid {
 
       estimator = new channel_estimator(seq1, k*training_seq_len, threshold, dphi_max);
       work_exec_cycle = 0;
+
+      out_files[0] = fopen("/tmp/payload_data1.txt", "w");
+      out_files[1] = fopen("/tmp/payload_data2.txt", "w");
+
+      num_frames_detected = 0;
+      errors[0] = 0;
+      errors[1] = 0;
 
       reset();
     }
@@ -192,6 +217,9 @@ namespace liquid {
       free(preamble_rx[1][1]);
       free(rx_sig[0]);
       free(rx_sig[1]);
+      free(rx_payload[0]);
+      free(rx_payload[1]);
+      free(expected_payload);
       delete estimator;
 
       detector_cccf_destroy(frame_detector[0][0]);
@@ -214,8 +242,14 @@ namespace liquid {
       nco_crcf_destroy(nco_fine[0]);
       nco_crcf_destroy(nco_fine[1]);
 
+      modem_destroy(demod[0]);
+      modem_destroy(demod[1]);
+
       dotprod_cccf_destroy(pn_dotprods[0]);
       dotprod_cccf_destroy(pn_dotprods[1]);
+
+      fclose(out_files[0]);
+      fclose(out_files[1]);
     }
 
     unsigned int framesync::get_frame_len() {
@@ -252,6 +286,8 @@ namespace liquid {
       memmove(last_rx_sig[0], curr_rx_sig[0], sizeof(std::complex<float>)*frame_len);
       memmove(last_rx_sig[1], curr_rx_sig[1], sizeof(std::complex<float>)*frame_len);
       printf("Synchronizer Execution cycle :%u\n",work_exec_cycle++);
+      training_match_index_diffs1();
+      training_match_index_diffs2();
     }
 
     void framesync::execute_seekpn1(std::complex<float> ** _x, unsigned int i)
@@ -319,7 +355,6 @@ namespace liquid {
                  20*log10f(gamma_hat[0][0]/gamma_hat[0][1]));
         }
 
-//        training_match_index_diffs1();
         wait_for_pn2 = 0;
         state = STATE_DETECTFRAME2;
       }
@@ -397,7 +432,6 @@ namespace liquid {
                  20*log10f(gamma_hat[1][0]/gamma_hat[1][1]));
         }
 
-  //      training_match_index_diffs2();
         pushpn();
       }
     }
@@ -469,25 +503,17 @@ namespace liquid {
     {
       std::complex<float> dotp[2][2];
       std::complex<float> * pn_window_ptr[2];
+      std::complex<float> * pn_window_unscaled_ptr[2];
       bool sync;
       windowcf_read(pn_window[0], &pn_window_ptr[0]);
       windowcf_read(pn_window[1], &pn_window_ptr[1]);
+      windowcf_read(pn_window_unscaled[0], &pn_window_unscaled_ptr[0]);
+      windowcf_read(pn_window_unscaled[1], &pn_window_unscaled_ptr[1]);
 
       dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[0], &dotp[0][0]);
       dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[1], &dotp[0][1]);
       dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[0] + 66, &dotp[1][0]);
       dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[1] + 66, &dotp[1][1]);
-
-      if(std::abs(dotp[0][0]) > 10.0) {
-        printf("dot products [0][0] :%8.4f + i%8.4f, mag :%8.4f\n",
-            std::real(dotp[0][0]), std::imag(dotp[0][0]), std::abs(dotp[0][0]));
-        printf("dot products [0][1] :%8.4f + i%8.4f, mag :%8.4f\n",
-            std::real(dotp[0][1]), std::imag(dotp[0][1]), std::abs(dotp[0][1]));
-        printf("dot products [1][0] :%8.4f + i%8.4f, mag :%8.4f\n",
-            std::real(dotp[1][0]), std::imag(dotp[1][0]), std::abs(dotp[1][0]));
-        printf("dot products [1][1] :%8.4f + i%8.4f, mag :%8.4f\n",
-            std::real(dotp[1][1]), std::imag(dotp[1][1]), std::abs(dotp[1][1]));
-      }
 
       sync = (std::abs(dotp[0][1]) > 50.0);
 
@@ -502,121 +528,108 @@ namespace liquid {
         printf("dot products [1][1] :%8.4f + i%8.4f, mag :%8.4f\n",
             std::real(dotp[1][1]), std::imag(dotp[1][1]), std::abs(dotp[1][1]));
 
-        if(SHOW_OTHER_DOTS) {
-          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[0] + 1, &dotp[0][0]);
-          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[1] + 1, &dotp[0][1]);
-          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[0] + 67, &dotp[1][0]);
-          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[1] + 67, &dotp[1][1]);
-          printf("dot products [0][0] :%8.4f + i%8.4f, mag :%8.4f\n",
-              std::real(dotp[0][0]), std::imag(dotp[0][0]), std::abs(dotp[0][0]));
-          printf("dot products [0][1] :%8.4f + i%8.4f, mag :%8.4f\n",
-              std::real(dotp[0][1]), std::imag(dotp[0][1]), std::abs(dotp[0][1]));
-          printf("dot products [1][0] :%8.4f + i%8.4f, mag :%8.4f\n",
-              std::real(dotp[1][0]), std::imag(dotp[1][0]), std::abs(dotp[1][0]));
-          printf("dot products [1][1] :%8.4f + i%8.4f, mag :%8.4f\n",
-              std::real(dotp[1][1]), std::imag(dotp[1][1]), std::abs(dotp[1][1]));
-          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[0] + 2, &dotp[0][0]);
-          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[1] + 2, &dotp[0][1]);
-          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[0] + 68, &dotp[1][0]);
-          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[1] + 68, &dotp[1][1]);
-          printf("dot products [0][0] :%8.4f + i%8.4f, mag :%8.4f\n",
-              std::real(dotp[0][0]), std::imag(dotp[0][0]), std::abs(dotp[0][0]));
-          printf("dot products [0][1] :%8.4f + i%8.4f, mag :%8.4f\n",
-              std::real(dotp[0][1]), std::imag(dotp[0][1]), std::abs(dotp[0][1]));
-          printf("dot products [1][0] :%8.4f + i%8.4f, mag :%8.4f\n",
-              std::real(dotp[1][0]), std::imag(dotp[1][0]), std::abs(dotp[1][0]));
-          printf("dot products [1][1] :%8.4f + i%8.4f, mag :%8.4f\n",
-              std::real(dotp[1][1]), std::imag(dotp[1][1]), std::abs(dotp[1][1]));
-          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[0] + 3, &dotp[0][0]);
-          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[1] + 3, &dotp[0][1]);
-          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[0] + 65, &dotp[1][0]);
-          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[1] + 65, &dotp[1][1]);
-          printf("dot products [0][0] :%8.4f + i%8.4f, mag :%8.4f\n",
-              std::real(dotp[0][0]), std::imag(dotp[0][0]), std::abs(dotp[0][0]));
-          printf("dot products [0][1] :%8.4f + i%8.4f, mag :%8.4f\n",
-              std::real(dotp[0][1]), std::imag(dotp[0][1]), std::abs(dotp[0][1]));
-          printf("dot products [1][0] :%8.4f + i%8.4f, mag :%8.4f\n",
-              std::real(dotp[1][0]), std::imag(dotp[1][0]), std::abs(dotp[1][0]));
-          printf("dot products [1][1] :%8.4f + i%8.4f, mag :%8.4f\n",
-              std::real(dotp[1][1]), std::imag(dotp[1][1]), std::abs(dotp[1][1]));
-        }
-
+        std::complex<float> phasing_symb;
         // #FIXME
         {
-          std::complex<float> phasing_symb;
-          std::complex<float> dphi_metric[2][2] = {{0.0f, 0.0f}, {0.0f, 0.0f}};
-          std::complex<float> r0[2][2] = {{0.0f, 0.0f}, {0.0f, 0.0f}};
-          std::complex<float> r1[2][2] = {{0.0f, 0.0f}, {0.0f, 0.0f}};
+          std::complex<float> dphi_metric[2] = {0.0f, 0.0f};
+          std::complex<float> theta_metric[2] = {0.0f, 0.0f};
+          float dphi_hat[2];
+          float theta_hat[2];
+          std::complex<float> r0[2] = {0.0f, 0.0f};
+          std::complex<float> r1[2] = {0.0f, 0.0f};
   
           for(unsigned int i = 0; i < training_seq_len; i++)
           {
-            r0[0][0] = r1[0][0];
-            r0[0][1] = r1[0][1];
-            r0[1][0] = r1[1][0];
-            r0[1][1] = r1[1][1];
-            r1[0][0] = (*(pn_window_ptr[0] +  0 + i))*preamble_pn[0][i];
-            r1[0][1] = (*(pn_window_ptr[1] +  0 + i))*preamble_pn[0][i];
-            r1[1][0] = (*(pn_window_ptr[0] + 66 + i))*preamble_pn[1][i];
-            r1[1][1] = (*(pn_window_ptr[1] + 66 + i))*preamble_pn[1][i];
-            dphi_metric[0][0] += r1[0][0]*std::conj(r0[0][0]);
-            dphi_metric[0][1] += r1[0][1]*std::conj(r0[0][1]);
-            dphi_metric[1][0] += r1[1][0]*std::conj(r0[1][0]);
-            dphi_metric[1][1] += r1[1][1]*std::conj(r0[1][1]);
-          }
-  
-          float dphi_hat[2][2] = {{std::arg(dphi_metric[0][0]),
-                                   std::arg(dphi_metric[0][1])},
-                                  {std::arg(dphi_metric[1][0]),
-                                   std::arg(dphi_metric[1][1])}};
-  
-          std::complex<float> theta_metric[2][2] = {{0.0f, 0.0f}, {0.0f, 0.0f}};
-  
-          for(unsigned int i = 0; i < training_seq_len; i++)
-          {
-            theta_metric[0][0] += (*(pn_window_ptr[0] +  0 + i))*std::exp(-dphi_hat[0][0]*i)*preamble_pn[0][i];
-            theta_metric[0][1] += (*(pn_window_ptr[1] +  0 + i))*std::exp(-dphi_hat[0][1]*i)*preamble_pn[0][i];
-            theta_metric[1][0] += (*(pn_window_ptr[0] + 66 + i))*std::exp(-dphi_hat[1][0]*i)*preamble_pn[1][i];
-            theta_metric[1][1] += (*(pn_window_ptr[1] + 66 + i))*std::exp(-dphi_hat[1][1]*i)*preamble_pn[1][i];
+            phasing_symb = (i % 2) ? 1.0f : -1.0f;
+            r0[0] = r1[0];
+            r0[1] = r1[1];
+            r1[0] = pn_window_ptr[0][2*(m + training_seq_len) + i]*phasing_symb;
+            r1[0] = pn_window_ptr[1][2*(m + training_seq_len) + i]*phasing_symb;
+            dphi_metric[0] += r1[0]*std::conj(r0[0]);
+            dphi_metric[1] += r1[1]*std::conj(r0[1]);
           }
 
-          float theta_hat[2][2] = {{std::arg(theta_metric[0][0]),
-                                    std::arg(theta_metric[0][1])},
-                                   {std::arg(theta_metric[1][0]),
-                                    std::arg(theta_metric[1][1])}};
+          if(USE_AVERAGE_METRIC) {
+            dphi_hat[0] = std::arg((dphi_metric[0] + dphi_metric[1])/2.0f);
+            dphi_hat[1] = std::arg((dphi_metric[0] + dphi_metric[1])/2.0f);
+          }
+          else {
+            dphi_hat[0] = std::arg(dphi_metric[0]);
+            dphi_hat[1] = std::arg(dphi_metric[1]);
+          }
+
+          for(unsigned int i = 0; i < training_seq_len; i++)
+          {
+            phasing_symb = (i % 2) ? 1.0f : -1.0f;
+            theta_metric[0] += (*(pn_window_ptr[0] + 132 + i))*
+              std::exp(-dphi_hat[0]*i)*phasing_symb;
+            theta_metric[1] += (*(pn_window_ptr[1] + 132 + i))*
+              std::exp(-dphi_hat[1]*i)*phasing_symb;
+          }
+
+          if(USE_AVERAGE_METRIC) {
+            theta_hat[0] = std::arg((theta_metric[0] + theta_metric[1])/2.0f);
+            theta_hat[1] = std::arg((theta_metric[0] + theta_metric[1])/2.0f);
+          }
+          else {
+            theta_hat[0] = std::arg(theta_metric[0]);
+            theta_hat[1] = std::arg(theta_metric[1]);
+          }
+
+          printf("dphi_metric[0] :%8.4f + %8.4fi\n",
+                 std::real(dphi_metric[0]), std::imag(dphi_metric[0]));
   
-          printf("dphi_metric[0][0] :%8.4f + %8.4fi\n",
-                 std::real(dphi_metric[0][0]), std::imag(dphi_metric[0][0]));
+          printf("dphi_metric[1] :%8.4f + %8.4fi\n",
+                 std::real(dphi_metric[1]), std::imag(dphi_metric[1]));
   
-          printf("dphi_metric[0][1] :%8.4f + %8.4fi\n",
-                 std::real(dphi_metric[0][1]), std::imag(dphi_metric[0][1]));
+          printf("dphi_hat[0] :%8.4f\n", dphi_hat[0]);
+          printf("dphi_hat[1] :%8.4f\n", dphi_hat[1]);
           
-          printf("dphi_metric[1][0] :%8.4f + %8.4fi\n",
-                 std::real(dphi_metric[1][0]), std::imag(dphi_metric[1][0]));
+          printf("theta_metric[0] :%8.4f + %8.4fi\n",
+                 std::real(theta_metric[0]), std::imag(theta_metric[0]));
           
-          printf("dphi_metric[1][1] :%8.4f + %8.4fi\n",
-                 std::real(dphi_metric[1][1]), std::imag(dphi_metric[1][1]));
-  
-          printf("dphi_hat[0][0] :%8.4f\n", dphi_hat[0][0]);
-          printf("dphi_hat[0][1] :%8.4f\n", dphi_hat[0][1]);
-          printf("dphi_hat[1][0] :%8.4f\n", dphi_hat[1][0]);
-          printf("dphi_hat[1][1] :%8.4f\n", dphi_hat[1][1]);
+          printf("theta_metric[1] :%8.4f + %8.4fi\n",
+                 std::real(theta_metric[1]), std::imag(theta_metric[1]));
           
-          printf("theta_metric[0][0] :%8.4f + %8.4fi\n",
-                 std::real(theta_metric[0][0]), std::imag(theta_metric[0][0]));
-          
-          printf("theta_metric[0][1] :%8.4f + %8.4fi\n",
-                 std::real(theta_metric[0][1]), std::imag(theta_metric[0][1]));
-          
-          printf("theta_metric[1][0] :%8.4f + %8.4fi\n",
-                 std::real(theta_metric[1][0]), std::imag(theta_metric[1][0]));
-          
-          printf("theta_metric[1][1] :%8.4f + %8.4fi\n",
-                 std::real(theta_metric[1][1]), std::imag(theta_metric[1][1]));
-          
-          printf("theta_hat[0][0] :%8.4f\n", theta_hat[0][0]);
-          printf("theta_hat[0][1] :%8.4f\n", theta_hat[0][1]);
-          printf("theta_hat[1][0] :%8.4f\n", theta_hat[1][0]);
-          printf("theta_hat[1][1] :%8.4f\n", theta_hat[1][1]);
+          printf("theta_hat[0] :%8.4f\n", theta_hat[0]);
+          printf("theta_hat[1] :%8.4f\n", theta_hat[1]);
+
+          // initialize fine-tuned nco
+          nco_fine_freq[0] = dphi_hat[0];
+          nco_fine_freq[1] = dphi_hat[1];
+          nco_fine_phase[0] = theta_hat[0];
+          nco_fine_phase[1] = theta_hat[1];
+
+          nco_crcf_set_frequency(nco_fine[0], nco_fine_freq[0]);
+          nco_crcf_set_phase(nco_fine[0], nco_fine_phase[0]);
+          nco_crcf_set_frequency(nco_fine[1], nco_fine_freq[1]);
+          nco_crcf_set_phase(nco_fine[1], nco_fine_phase[1]);
+
+          std::complex<float> temp[2];
+          float sumsq[2] = {0.0f, 0.0f};
+          float phase_error[2];
+          for(unsigned int i = 0; i < training_seq_len; i++)
+          {
+            phasing_symb = (i % 2) ? 1.0f : -1.0f;
+            nco_crcf_mix_down(nco_fine[0], pn_window_unscaled_ptr[0][132 + i], &temp[0]);
+            nco_crcf_mix_down(nco_fine[1], pn_window_unscaled_ptr[1][132 + i], &temp[1]);
+
+            phase_error[0] = std::imag((temp[0]*phasing_symb + temp[1]*phasing_symb)/2.0f);
+            phase_error[1] = std::imag((temp[0]*phasing_symb + temp[1]*phasing_symb)/2.0f);
+
+            nco_crcf_pll_step(nco_fine[0], phase_error[0]);
+            nco_crcf_pll_step(nco_fine[1], phase_error[1]);
+
+            nco_crcf_step(nco_fine[0]);
+            nco_crcf_step(nco_fine[1]);
+
+            sumsq[0] += std::real(temp[0] * std::conj(temp[0]));
+            sumsq[1] += std::real(temp[1] * std::conj(temp[1]));
+          }
+          pow[0] = sqrtf(sumsq[0]/(float)training_seq_len);
+          pow[1] = sqrtf(sumsq[1]/(float)training_seq_len);
+          printf("pow[0] : %8.4f dB\n", 20*log10f(pow[0]));
+          printf("pow[1] : %8.4f dB\n", 20*log10f(pow[1]));
         }
 
         state = STATE_RXPAYLOAD;
@@ -631,7 +644,52 @@ namespace liquid {
     // payload buffer.
     void framesync::decode_payload()
     {
-        reset();
+      std::complex<float> * payload_window_ptr[2];
+      std::complex<float> symbols[2];
+      unsigned int sym_out[2] = {0, 0};
+      windowcf_read(payload_window[0], &payload_window_ptr[0]);
+      windowcf_read(payload_window[1], &payload_window_ptr[1]);
+
+      for(unsigned int i = 0; i < payload_len; i++)
+      {
+        nco_crcf_mix_down(nco_fine[0], payload_window_ptr[0][i]*0.5f/pow[0], &symbols[0]);
+        nco_crcf_mix_down(nco_fine[1], payload_window_ptr[1][i]*0.5f/pow[1], &symbols[1]);
+
+        modem_demodulate(demod[0], symbols[0], &sym_out[0]);
+        modem_demodulate(demod[1], symbols[1], &sym_out[1]);
+
+        float phase_error = (modem_get_demodulator_phase_error(demod[0]) +
+                             modem_get_demodulator_phase_error(demod[1]))/2.0f;
+
+        rx_payload[0][i] = sym_out[0];
+        rx_payload[1][i] = sym_out[1];
+
+        if(sym_out[0] != expected_payload[i])
+          errors[0]++;
+        if(sym_out[1] != expected_payload[i])
+          errors[1]++;
+
+        nco_crcf_pll_step(nco_fine[0], phase_error);
+        nco_crcf_pll_step(nco_fine[1], phase_error);
+
+        nco_crcf_step(nco_fine[0]);
+        nco_crcf_step(nco_fine[1]);
+      }
+
+      if(PRINT_PAYLOAD) {
+        for(unsigned int i = 0; i < payload_len; i++)
+        {
+          printf("%d", rx_payload[0][i]);
+        }
+        printf("\n");
+        for(unsigned int i = 0; i < payload_len; i++)
+        {
+          printf("%d", rx_payload[1][i]);
+        }
+        printf("\n");
+      }
+      num_frames_detected++;
+      reset();
     }
 
     void framesync::execute_rxpn(std::complex<float> ** _x, unsigned int i)
@@ -658,6 +716,21 @@ namespace liquid {
         if(pn_count == 3*training_seq_len + 2*m)
           sync_pn();
       }
+    }
+
+    unsigned long int framesync::get_num_bits_detected()
+    {
+      return(num_frames_detected*payload_len);
+    }
+
+    unsigned long int framesync::get_num_errors1()
+    {
+      return(errors[0]);
+    }
+
+    unsigned long int framesync::get_num_errors2()
+    {
+      return(errors[1]);
     }
 
     void framesync::execute_rxpayload(std::complex<float> ** _x, unsigned int i)
@@ -727,11 +800,6 @@ namespace liquid {
         }
       }
       pfb_timer--;
-
-      nco_crcf_mix_down(nco_fine[0], mf_out[0], &mf_out[0]);
-      nco_crcf_step(nco_fine[0]);
-      nco_crcf_mix_down(nco_fine[1], mf_out[0], &mf_out[0]);
-      nco_crcf_step(nco_fine[1]);
 
       out[0] = mf_out[0];
       out[1] = mf_out[1];
@@ -803,3 +871,164 @@ namespace liquid {
     }
   }   // namespace mimo
 }     // namespace liquid
+
+/*
+        if(SHOW_OTHER_DOTS) {
+          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[0] + 1, &dotp[0][0]);
+          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[1] + 1, &dotp[0][1]);
+          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[0] + 67, &dotp[1][0]);
+          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[1] + 67, &dotp[1][1]);
+          printf("dot products [0][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[0][0]), std::imag(dotp[0][0]), std::abs(dotp[0][0]));
+          printf("dot products [0][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[0][1]), std::imag(dotp[0][1]), std::abs(dotp[0][1]));
+          printf("dot products [1][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[1][0]), std::imag(dotp[1][0]), std::abs(dotp[1][0]));
+          printf("dot products [1][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[1][1]), std::imag(dotp[1][1]), std::abs(dotp[1][1]));
+          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[0] + 2, &dotp[0][0]);
+          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[1] + 2, &dotp[0][1]);
+          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[0] + 68, &dotp[1][0]);
+          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[1] + 68, &dotp[1][1]);
+          printf("dot products [0][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[0][0]), std::imag(dotp[0][0]), std::abs(dotp[0][0]));
+          printf("dot products [0][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[0][1]), std::imag(dotp[0][1]), std::abs(dotp[0][1]));
+          printf("dot products [1][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[1][0]), std::imag(dotp[1][0]), std::abs(dotp[1][0]));
+          printf("dot products [1][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[1][1]), std::imag(dotp[1][1]), std::abs(dotp[1][1]));
+          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[0] + 3, &dotp[0][0]);
+          dotprod_cccf_execute(pn_dotprods[0], pn_window_ptr[1] + 3, &dotp[0][1]);
+          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[0] + 65, &dotp[1][0]);
+          dotprod_cccf_execute(pn_dotprods[1], pn_window_ptr[1] + 65, &dotp[1][1]);
+          printf("dot products [0][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[0][0]), std::imag(dotp[0][0]), std::abs(dotp[0][0]));
+          printf("dot products [0][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[0][1]), std::imag(dotp[0][1]), std::abs(dotp[0][1]));
+          printf("dot products [1][0] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[1][0]), std::imag(dotp[1][0]), std::abs(dotp[1][0]));
+          printf("dot products [1][1] :%8.4f + i%8.4f, mag :%8.4f\n",
+              std::real(dotp[1][1]), std::imag(dotp[1][1]), std::abs(dotp[1][1]));
+
+        std::complex<float> phasing_symb;
+        std::complex<float> temp[2][training_seq_len];
+        std::complex<float> hell[2];
+
+        // #FIXME
+        {
+          std::complex<float> dphi_metric[2][2] = {{0.0f, 0.0f}, {0.0f, 0.0f}};
+          std::complex<float> r0[2][2] = {{0.0f, 0.0f}, {0.0f, 0.0f}};
+          std::complex<float> r1[2][2] = {{0.0f, 0.0f}, {0.0f, 0.0f}};
+  
+          for(unsigned int i = 0; i < training_seq_len; i++)
+          {
+            r0[0][0] = r1[0][0];
+            r0[0][1] = r1[0][1];
+            r0[1][0] = r1[1][0];
+            r0[1][1] = r1[1][1];
+            r1[0][0] = (*(pn_window_ptr[0] +  0 + i))*preamble_pn[0][i];
+            r1[0][1] = (*(pn_window_ptr[1] +  0 + i))*preamble_pn[0][i];
+            r1[1][0] = (*(pn_window_ptr[0] + 66 + i))*preamble_pn[1][i];
+            r1[1][1] = (*(pn_window_ptr[1] + 66 + i))*preamble_pn[1][i];
+            dphi_metric[0][0] += r1[0][0]*std::conj(r0[0][0]);
+            dphi_metric[0][1] += r1[0][1]*std::conj(r0[0][1]);
+            dphi_metric[1][0] += r1[1][0]*std::conj(r0[1][0]);
+            dphi_metric[1][1] += r1[1][1]*std::conj(r0[1][1]);
+          }
+  
+          float dphi_hat[2][2] = {{std::arg(dphi_metric[0][0]),
+                                   std::arg(dphi_metric[0][1])},
+                                  {std::arg(dphi_metric[1][0]),
+                                   std::arg(dphi_metric[1][1])}};
+  
+          std::complex<float> theta_metric[2][2] = {{0.0f, 0.0f}, {0.0f, 0.0f}};
+  
+          for(unsigned int i = 0; i < training_seq_len; i++)
+          {
+            theta_metric[0][0] += (*(pn_window_ptr[0] +  0 + i))*
+              std::exp(-dphi_hat[0][0]*i)*preamble_pn[0][i];
+            theta_metric[0][1] += (*(pn_window_ptr[1] +  0 + i))*
+              std::exp(-dphi_hat[0][1]*i)*preamble_pn[0][i];
+            theta_metric[1][0] += (*(pn_window_ptr[0] + 66 + i))*
+              std::exp(-dphi_hat[1][0]*i)*preamble_pn[1][i];
+            theta_metric[1][1] += (*(pn_window_ptr[1] + 66 + i))*
+              std::exp(-dphi_hat[1][1]*i)*preamble_pn[1][i];
+          }
+
+          float theta_hat[2][2] = {{std::arg(theta_metric[0][0]),
+                                    std::arg(theta_metric[0][1])},
+                                   {std::arg(theta_metric[1][0]),
+                                    std::arg(theta_metric[1][1])}};
+  
+          printf("dphi_metric[0][0] :%8.4f + %8.4fi\n",
+                 std::real(dphi_metric[0][0]), std::imag(dphi_metric[0][0]));
+  
+          printf("dphi_metric[0][1] :%8.4f + %8.4fi\n",
+                 std::real(dphi_metric[0][1]), std::imag(dphi_metric[0][1]));
+          
+          printf("dphi_metric[1][0] :%8.4f + %8.4fi\n",
+                 std::real(dphi_metric[1][0]), std::imag(dphi_metric[1][0]));
+          
+          printf("dphi_metric[1][1] :%8.4f + %8.4fi\n",
+                 std::real(dphi_metric[1][1]), std::imag(dphi_metric[1][1]));
+  
+          printf("dphi_hat[0][0] :%8.4f\n", dphi_hat[0][0]);
+          printf("dphi_hat[0][1] :%8.4f\n", dphi_hat[0][1]);
+          printf("dphi_hat[1][0] :%8.4f\n", dphi_hat[1][0]);
+          printf("dphi_hat[1][1] :%8.4f\n", dphi_hat[1][1]);
+          
+          printf("theta_metric[0][0] :%8.4f + %8.4fi\n",
+                 std::real(theta_metric[0][0]), std::imag(theta_metric[0][0]));
+          
+          printf("theta_metric[0][1] :%8.4f + %8.4fi\n",
+                 std::real(theta_metric[0][1]), std::imag(theta_metric[0][1]));
+          
+          printf("theta_metric[1][0] :%8.4f + %8.4fi\n",
+                 std::real(theta_metric[1][0]), std::imag(theta_metric[1][0]));
+          
+          printf("theta_metric[1][1] :%8.4f + %8.4fi\n",
+                 std::real(theta_metric[1][1]), std::imag(theta_metric[1][1]));
+          
+          printf("theta_hat[0][0] :%8.4f\n", theta_hat[0][0]);
+          printf("theta_hat[0][1] :%8.4f\n", theta_hat[0][1]);
+          printf("theta_hat[1][0] :%8.4f\n", theta_hat[1][0]);
+          printf("theta_hat[1][1] :%8.4f\n", theta_hat[1][1]);
+
+          // initialize fine-tuned nco
+          nco_fine_freq[0] = dphi_hat[0][0];
+          nco_fine_freq[1] = dphi_hat[0][1];
+          nco_fine_phase[0] = theta_hat[0][0];
+          nco_fine_phase[1] = theta_hat[0][1];
+
+          nco_crcf_set_frequency(nco_fine[0], nco_fine_freq[0]);
+          nco_crcf_set_phase(nco_fine[0], nco_fine_phase[0]);
+          nco_crcf_set_frequency(nco_fine[1], nco_fine_freq[1]);
+          nco_crcf_set_phase(nco_fine[1], nco_fine_phase[1]);
+        }
+
+        for(unsigned int i = 0; i < training_seq_len; i++) {
+          nco_crcf_mix_down(nco_fine[0], *(pn_window_ptr[0] + i), temp[0] + i);
+          nco_crcf_mix_down(nco_fine[1], *(pn_window_ptr[1] + i), temp[1] + i);
+
+          nco_crcf_pll_step(nco_fine[0], std::imag(temp[0][i]*preamble_pn[0][i]));
+          nco_crcf_pll_step(nco_fine[1], std::imag(temp[1][i]*preamble_pn[0][i]));
+
+          nco_crcf_step(nco_fine[0]);
+          nco_crcf_step(nco_fine[1]);
+        }
+
+        for(unsigned int i = 0; i < training_seq_len; i++) {
+          phasing_symb = (i % 2) ? 1.0f : -1.0f;
+
+          nco_crcf_mix_down(nco_fine[0], *(pn_window_ptr[0] + 132 + i), temp[0] + i);
+          nco_crcf_mix_down(nco_fine[1], *(pn_window_ptr[1] + 132 + i), temp[1] + i);
+
+          nco_crcf_pll_step(nco_fine[0], std::imag(temp[0][i]*phasing_symb));
+          nco_crcf_pll_step(nco_fine[1], std::imag(temp[1][i]*phasing_symb));
+
+          nco_crcf_step(nco_fine[0]);
+          nco_crcf_step(nco_fine[1]);
+        }
+
+        }*/

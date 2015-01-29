@@ -237,7 +237,6 @@ namespace liquid {
 
     void framesync::pushpn()
     {
-      int delay = find_index_of_corr();
       reset();
     }
 
