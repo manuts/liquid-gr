@@ -74,6 +74,7 @@ namespace liquid {
     }
 
     framegen::~framegen() {
+      free(payload);
       free(pn1);
       free(pn2);
       free(sps1);
