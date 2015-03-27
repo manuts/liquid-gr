@@ -6,17 +6,17 @@ prefix			= /target
 CC				:= gcc
 CXX				:= g++
 AR				:= ar
-RANLIB			:= ranlib
+RANLIB		:= ranlib
 MV				:= mv -f
 RM				:= rm -f
 
 # flags
 INCLUDE_CFLAGS	= -I./ -I./include/ -I/target/include/
-CONFIG_CFLAGS	= -g -O2 -march=core2
-CFLAGS			+= $(INCLUDE_CFLAGS) -Wall -fPIC $(CONFIG_CFLAGS)
-LDFLAGS			= -L/target/lib -L/target/lib64
-LDFLAGS			+= -lm -lc -lliquid
-ARFLAGS			= r
+CONFIG_CFLAGS		= -g -O2 -march=core2
+CFLAGS					+= $(INCLUDE_CFLAGS) -Wall -fPIC $(CONFIG_CFLAGS)
+LDFLAGS					= -L/target/lib -L/target/lib64
+LDFLAGS					+= -lm -lc -lliquid
+ARFLAGS					= r
 
 library_src		:=							\
   src/test/copy.cc						\
