@@ -844,7 +844,6 @@ namespace liquid {
       }
       else {
         printf("***** I smell somthing fishy\n");
-        assert(false);
       }
     }
 
