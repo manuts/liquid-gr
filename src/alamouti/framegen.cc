@@ -53,9 +53,7 @@ namespace liquid {
       interp2 = firinterp_crcf_create_rnyquist(LIQUID_FIRFILT_ARKAISER,k,m,beta,0);
       sps1 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*k);
       sps2 = (std::complex<float> *)malloc(sizeof(std::complex<float>)*k);
-
       assert(payload_len%2 == 0);
-
       reset();
     }
 
