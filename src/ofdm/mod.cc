@@ -27,20 +27,23 @@ namespace liquid {
       // validate input
       if (_M < 8) {
         fprintf(stderr,"error: modulator::modulator(), number of subcarriers must be at least 8\n");
-        throw 0;
+        exit(1);
+      } else if (_M % 2) {
+        fprintf(stderr,"error: modulator::modulator(), number of subcarriers must be even 8\n");
+        exit(1);
       } else if (_cp_len < 1) {
         fprintf(stderr,"error: modulator::modulator(), cyclic prefix length must be at least 1\n");
-        throw 0;
+        exit(1);
       } else if (_taper_len > _cp_len) {
         fprintf(stderr,"error: modulator::modulator(), taper length cannot exceed cyclic prefix length\n");
-        throw 0;
+        exit(1);
       }
     
       // set internal properties
       M               = _M;
       cp_len          = _cp_len;
       taper_len       = _taper_len;
-    
+
       // allocate memory
       X = (std::complex<float> *) malloc (M*sizeof(std::complex<float>));
       p = (unsigned char *) malloc (M*sizeof(unsigned char));
@@ -80,19 +83,20 @@ namespace liquid {
     
     modulator::~modulator()
     {
-      free(X);
-      free(p);
       ofdmframegen_destroy(fg);
       packetizer_destroy(p_header);
       packetizer_destroy(p_payload);
       modem_destroy(mod_header);
       modem_destroy(mod_payload);
+
+      free(X);
+      free(p);
     }
     
     void modulator::reset()
     {
       symbol_number = 0;
-      state = STATE_S0A;
+      state = TX_STATE_S0A;
       frame_assembled = 0;
       frame_complete = 0;
       header_symbol_index = 0;
@@ -255,27 +259,27 @@ namespace liquid {
       symbol_number++;
   
       switch (state) {
-      case STATE_S0A:
+      case TX_STATE_S0A:
         // write S0 symbol (first)
         write_S0a(_buffer);
         break;
     
-        case STATE_S0B:
+        case TX_STATE_S0B:
           // write S0 symbol (second)
           write_S0b(_buffer);
           break;
     
-        case STATE_S1:
+        case TX_STATE_S1:
           // write S1 symbols
           write_S1(_buffer);
           break;
     
-        case STATE_HDR:
+        case TX_STATE_HDR:
           // write header symbols
           write_header(_buffer);
           break;
     
-        case STATE_PLD:
+        case TX_STATE_PLD:
           // write payload symbols
           write_payload(_buffer);
           break;
@@ -301,8 +305,12 @@ namespace liquid {
       memset(payload_m, 0x00, payload_mod_len);
       unsigned int bps = modulation_types[OFDMFRAME_P_MOD].bps;
       unsigned int num_written;
-      liquid_repack_bytes(payload_e,  8,  payload_enc_len,
-                          payload_m, bps, payload_mod_len,
+      liquid_repack_bytes(payload_e,
+                          8,
+                          payload_enc_len,
+                          payload_m,
+                          bps,
+                          payload_mod_len,
                           &num_written);
       frame_assembled = 1;
       #if DEBUG_OFDMFLEXFRAMEGEN
@@ -358,7 +366,7 @@ namespace liquid {
         // write S0 symbol into front of buffer
         ofdmframegen_write_S0a(fg, _buffer);
         // update state
-        state = STATE_S0B;
+        state = TX_STATE_S0B;
     }
     
     // write second S0 symbol
@@ -372,7 +380,7 @@ namespace liquid {
         ofdmframegen_write_S0b(fg, _buffer);
     
         // update state
-        state = STATE_S1;
+        state = TX_STATE_S1;
     }
     
     // write S1 symbol
@@ -387,7 +395,7 @@ namespace liquid {
     
         // update state
         symbol_number = 0;
-        state = STATE_HDR;
+        state = TX_STATE_HDR;
     }
     
     // write header symbol
@@ -422,7 +430,7 @@ namespace liquid {
       // check state
       if(symbol_number == num_header_symbols) {
         symbol_number = 0;
-        state = STATE_PLD;
+        state = TX_STATE_PLD;
       }
     }
     
@@ -474,12 +482,12 @@ namespace liquid {
       printf("    taper len           :   %-u\n", taper_len);
       printf("    properties:\n");
       printf("    frame assembled     :   %s\n", frame_assembled ? "yes" : "no");
-      if (frame_assembled) {
+      if (1) {
         printf("    payload:\n");
         printf("      * decoded bytes   :   %-u\n", payload_dec_len);
         printf("      * encoded bytes   :   %-u\n", payload_enc_len);
         printf("      * modulated syms  :   %-u\n", payload_mod_len);
-        printf("    total OFDM symbols  :   %-u\n", get_frame_len());
+        printf("    total OFDM symbols  :   %-u\n", frame_len);
         printf("      * S0 symbols      :   %-u @ %u\n", 2, M + cp_len);
         printf("      * S1 symbols      :   %-u @ %u\n", 1, M + cp_len);
         printf("      * header symbols  :   %-u @ %u\n", num_header_symbols, M + cp_len);
