@@ -28,25 +28,6 @@
 #include <assert.h>
 #include <volk/volk.h>
 
-//#define OFDMFRAME_VERSN   (104)
-//#define OFDMFRAME_H_USR   (8)
-//#define OFDMFRAME_H_LEN   (14)
-//#define OFDMFRAME_H_CRC   (LIQUID_CRC_32)
-//#define OFDMFRAME_H_EC1   (LIQUID_FEC_GOLAY2412)
-//#define OFDMFRAME_H_EC2   (LIQUID_FEC_NONE)
-//#define OFDMFRAME_H_ENC   (36)
-//#define OFDMFRAME_H_MOD   (LIQUID_MODEM_BPSK)
-//#define OFDMFRAME_H_BPS   (1)
-//#define OFDMFRAME_H_SYM   (288)
-//#define OFDMFRAME_P_LEN   (512)
-//#define OFDMFRAME_P_CRC   (LIQUID_CRC_NONE)
-//#define OFDMFRAME_P_EC1   (LIQUID_FEC_NONE)
-//#define OFDMFRAME_P_EC2   (LIQUID_FEC_NONE)
-//#define OFDMFRAME_P_ENC   (512)                // FIXME
-//#define OFDMFRAME_P_MOD   (LIQUID_MODEM_QPSK)
-//#define OFDMFRAME_P_BPS   (2)
-//#define OFDMFRAME_P_SYM   (2048)
-
 typedef enum {RX_STATE_HDR = 0,  // receive header
               RX_STATE_PLD       // receive payload
              } rx_states;
