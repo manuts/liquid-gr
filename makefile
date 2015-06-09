@@ -11,11 +11,11 @@ MV				:= mv -f
 RM				:= rm -f
 
 # flags
-INCLUDE_CFLAGS	= -I./ -I./include/ -I/target/include/
+INCLUDE_CFLAGS	= -I./ -I./include/ -I/target/include/ -I/target/include/volk
 CONFIG_CFLAGS		= -g -O2 -march=core2
 CFLAGS					+= $(INCLUDE_CFLAGS) -Wall -fPIC $(CONFIG_CFLAGS)
 LDFLAGS					= -L/target/lib -L/target/lib64
-LDFLAGS					+= -lm -lc -lliquid
+LDFLAGS					+= -lm -lc -lliquid -lvolk
 ARFLAGS					= r
 
 library_src		:=							\

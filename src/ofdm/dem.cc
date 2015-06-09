@@ -55,7 +55,8 @@ namespace liquid {
                        unsigned int           _taper_len,
                        unsigned char *        _p,
                        framesync_callback     _callback,
-                       void *                 _userdata)
+                       void *                 _userdata,
+                       OFDMFRAME_STRUCT *     _frame_struct)
     {
       // validate input
       if (_M < 8) {
@@ -89,30 +90,50 @@ namespace liquid {
       fs = ofdmframesync_create(M, cp_len, taper_len, p,
                                 internal_callback,
                                 (void *)this);
-      p_header = packetizer_create(OFDMFRAME_H_LEN,
-                                   OFDMFRAME_H_CRC,
-                                   OFDMFRAME_H_EC1,
-                                   OFDMFRAME_H_EC2);
-      assert(packetizer_get_enc_msg_len(p_header) == OFDMFRAME_H_ENC);
-      mod_header = modem_create(OFDMFRAME_H_MOD);
-      p_payload = packetizer_create(OFDMFRAME_P_LEN,
-                                    OFDMFRAME_P_CRC,
-                                    OFDMFRAME_P_EC1,
-                                    OFDMFRAME_P_EC2);
-      assert(packetizer_get_enc_msg_len(p_payload) == OFDMFRAME_P_ENC);
-      mod_payload = modem_create(OFDMFRAME_P_MOD);
+      memmove(&frame_struct, _frame_struct, sizeof(OFDMFRAME_STRUCT));
+
+      p_header = packetizer_create(frame_struct.H_LEN,
+                                   frame_struct.H_CRC,
+                                   frame_struct.H_EC1,
+                                   frame_struct.H_EC2);
+      mod_header = modem_create(frame_struct.H_MOD);
+
+      header_bps = modem_get_bps(mod_header);
+      header_enc_len = packetizer_get_enc_msg_len(p_header);
+      header_mod_len = (unsigned int) ceil 
+        (float(header_enc_len*8)/float(header_bps));
+
+      header_d = (unsigned char *) malloc 
+        (frame_struct.H_LEN*sizeof(unsigned char));
+      header_e = (unsigned char *) malloc 
+        (header_enc_len*sizeof(unsigned char));
+      header_m = (unsigned char *) malloc 
+        (header_mod_len*sizeof(unsigned char));
+
+      p_payload = packetizer_create(frame_struct.P_LEN,
+                                    frame_struct.P_CRC,
+                                    frame_struct.P_EC1,
+                                    frame_struct.P_EC2);
+      mod_payload = modem_create(frame_struct.P_MOD);
+
+      payload_bps = modem_get_bps(mod_payload);
+      payload_enc_len = packetizer_get_enc_msg_len(p_payload);
+      payload_mod_len = (unsigned int) ceil 
+        (float(payload_enc_len*8)/float(payload_bps));
+
+      payload_d = (unsigned char *) malloc 
+        (frame_struct.P_LEN*sizeof(unsigned char));
+      payload_e = (unsigned char *) malloc 
+        (payload_enc_len*sizeof(unsigned char));
+      payload_m = (unsigned char *) malloc 
+        (payload_mod_len*sizeof(unsigned char));
     
-      div_t d = div(OFDMFRAME_H_SYM, M_data);
+      div_t d = div(header_mod_len, M_data);
       num_header_symbols = d.quot + (d.rem ? 1 : 0);
-      d = div(OFDMFRAME_P_SYM, M_data);
+      d = div(payload_mod_len, M_data);
       num_payload_symbols = d.quot + (d.rem ? 1 : 0);
       frame_len = 2 + 1 + num_header_symbols + num_payload_symbols;
-      payload_dec_len = OFDMFRAME_P_LEN;
-      payload_enc_len = OFDMFRAME_P_ENC;
-      payload_mod_len = OFDMFRAME_P_SYM;
-      header_dec_len = OFDMFRAME_H_LEN;
-      header_enc_len = OFDMFRAME_H_ENC;
-      header_mod_len = OFDMFRAME_H_SYM;
+
       reset();
     }
     
@@ -124,7 +145,12 @@ namespace liquid {
       packetizer_destroy(p_payload);
       modem_destroy(mod_payload);
 
-      // free internal buffers/arrays
+      free(header_d);
+      free(header_e);
+      free(header_m);
+      free(payload_d);
+      free(payload_e);
+      free(payload_m);
       free(p);
     }
 
@@ -194,11 +220,6 @@ namespace liquid {
       reset();
     }
     
-    unsigned int demodulator::get_header_dec_len()
-    {
-      return header_dec_len;
-    }
-    
     unsigned int demodulator::get_header_enc_len()
     {
       return header_enc_len;
@@ -207,11 +228,6 @@ namespace liquid {
     unsigned int demodulator::get_header_mod_len()
     {
       return header_mod_len;
-    }
-    
-    unsigned int demodulator::get_payload_dec_len()
-    {
-      return payload_dec_len;
     }
     
     unsigned int demodulator::get_payload_enc_len()
@@ -304,7 +320,7 @@ namespace liquid {
       printf("    properties:\n");
       if (1) {
         printf("    payload:\n");
-        printf("      * decoded bytes   :   %-u\n", payload_dec_len);
+        printf("      * decoded bytes   :   %-u\n", frame_struct.P_LEN);
         printf("      * encoded bytes   :   %-u\n", payload_enc_len);
         printf("      * modulated syms  :   %-u\n", payload_mod_len);
         printf("    total OFDM symbols  :   %-u\n", frame_len);
@@ -314,7 +330,7 @@ namespace liquid {
         printf("      * payload symbols :   %-u @ %u\n", num_payload_symbols, M + cp_len);
     
         // compute asymptotic spectral efficiency
-        unsigned int num_bits = 8*payload_dec_len;
+        unsigned int num_bits = 8*frame_struct.P_LEN;
         unsigned int num_samples = (M + cp_len)*(3 + num_header_symbols + num_payload_symbols);
         printf("    spectral efficiency :   %-6.4f b/s/Hz\n", (float)num_bits / (float)num_samples);
       }
@@ -370,12 +386,12 @@ namespace liquid {
           evm_hat += evm*evm;
 
           // header extracted
-          if (header_symbol_index == OFDMFRAME_H_SYM) {
+          if (header_symbol_index == header_mod_len) {
             // decode header
             decode_header();
           
             // compute error vector magnitude estimate
-            framestats.evm = 10*log10f(evm_hat/OFDMFRAME_H_SYM);
+            framestats.evm = 10*log10f(evm_hat/header_mod_len);
 
             // invoke callback if header is invalid
             if(header_valid)
@@ -414,19 +430,18 @@ namespace liquid {
     void demodulator::decode_header()
     {
       // pack 1-bit header symbols into 8-bit bytes
-      unsigned int bps = modulation_types[OFDMFRAME_H_MOD].bps;
       unsigned int num_written;
       liquid_repack_bytes(header_m,
-                          bps,
-                          OFDMFRAME_H_SYM,
+                          header_bps,
+                          header_mod_len,
                           header_e,
                           8,
-                          OFDMFRAME_H_ENC,
+                          header_enc_len,
                           &num_written);
-      assert(num_written == OFDMFRAME_H_ENC);
+      assert(num_written == header_enc_len);
 
       // unscramble header
-      unscramble_data(header_e, OFDMFRAME_H_ENC);
+      unscramble_data(header_e, header_enc_len);
 
       // run packet decoder
       header_valid = packetizer_decode(p_header,
@@ -439,10 +454,10 @@ namespace liquid {
       if (!header_valid)
         return;
 
-      unsigned int n = OFDMFRAME_H_USR;
+      unsigned int n = frame_struct.H_USR;
 
       // first byte is for expansion/version validation
-      if (header_d[n+0] != OFDMFRAME_VERSN) {
+      if (header_d[n+0] != frame_struct.VERSN) {
         fprintf(stderr,"warning: decode_header(), invalid framing version\n");
         header_valid = 0;
       }
@@ -453,11 +468,11 @@ namespace liquid {
 
       // strip off modulation scheme/depth
       unsigned int mod_scheme = header_d[n+3];
-      if (mod_scheme != OFDMFRAME_P_MOD) {
+      if (mod_scheme != frame_struct.P_MOD) {
         fprintf(stderr,"warning: decode_header(), invalid modulation scheme\n");
         header_valid = 0;
       }
-      if (payload_len != OFDMFRAME_P_LEN) {
+      if (payload_len != frame_struct.P_LEN) {
         fprintf(stderr,"warning: decode_header(), invalid payload length\n");
         header_valid = 0;
       }
@@ -471,17 +486,17 @@ namespace liquid {
       unsigned int fec1  = (header_d[n+5]      ) & 0x1f;
 
       // validate properties
-      if (check != OFDMFRAME_P_CRC) {
+      if (check != frame_struct.P_CRC) {
         fprintf(stderr,"warning: decode_header(), decoded CRC exceeds available\n");
         check = LIQUID_CRC_UNKNOWN;
         header_valid = 0;
       }
-      if (fec0 != OFDMFRAME_P_EC1) {
+      if (fec0 != frame_struct.P_EC1) {
         fprintf(stderr,"warning: decode_header(), decoded FEC (inner) exceeds available\n");
         fec0 = LIQUID_FEC_UNKNOWN;
         header_valid = 0;
       }
-      if (fec1 != OFDMFRAME_P_EC2) {
+      if (fec1 != frame_struct.P_EC2) {
         fprintf(stderr,"warning: decode_header(), decoded FEC (outer) exceeds available\n");
         fec1 = LIQUID_FEC_UNKNOWN;
         header_valid = 0;
@@ -518,11 +533,11 @@ namespace liquid {
           liquid_pack_array(payload_e,
                             payload_enc_len,
                             payload_buffer_index,
-                            OFDMFRAME_P_BPS,
+                            payload_bps,
                             sym);
 
           // increment...
-          payload_buffer_index += OFDMFRAME_P_BPS;
+          payload_buffer_index += payload_bps;
 
           // increment symbol counter
           payload_symbol_index++;
@@ -549,17 +564,17 @@ namespace liquid {
             framestats.cfo              = ofdmframesync_get_cfo(fs);
             framestats.framesyms        = NULL;
             framestats.num_framesyms    = 0;
-            framestats.mod_scheme       = OFDMFRAME_P_MOD;
-            framestats.mod_bps          = OFDMFRAME_P_BPS;
-            framestats.check            = OFDMFRAME_P_CRC;
-            framestats.fec0             = OFDMFRAME_P_EC1;
-            framestats.fec1             = OFDMFRAME_P_EC2;
+            framestats.mod_scheme       = frame_struct.P_MOD;
+            framestats.mod_bps          = payload_bps;
+            framestats.check            = frame_struct.P_CRC;
+            framestats.fec0             = frame_struct.P_EC1;
+            framestats.fec1             = frame_struct.P_EC2;
 
             // invoke callback method
             callback(header_d,
                      header_valid,
                      payload_d,
-                     payload_dec_len,
+                     frame_struct.P_LEN,
                      payload_valid,
                      framestats,
                      userdata);

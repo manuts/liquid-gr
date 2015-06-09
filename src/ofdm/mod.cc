@@ -22,7 +22,8 @@ namespace liquid {
     modulator::modulator(unsigned int       _M,
                          unsigned int       _cp_len,
                          unsigned int       _taper_len,
-                         unsigned char *    _p)
+                         unsigned char *    _p,
+                         OFDMFRAME_STRUCT * _frame_struct)
     {
       // validate input
       if (_M < 8) {
@@ -54,30 +55,52 @@ namespace liquid {
       ofdmframe_validate_sctype(p, M, &M_null, &M_pilot, &M_data);
     
       fg = ofdmframegen_create(M, cp_len, taper_len, p);
-      p_header = packetizer_create(OFDMFRAME_H_LEN,
-                                   OFDMFRAME_H_CRC,
-                                   OFDMFRAME_H_EC1,
-                                   OFDMFRAME_H_EC2);
-      assert(packetizer_get_enc_msg_len(p_header) == OFDMFRAME_H_ENC);
-      mod_header = modem_create(OFDMFRAME_H_MOD);
-      p_payload = packetizer_create(OFDMFRAME_P_LEN,
-                                    OFDMFRAME_P_CRC,
-                                    OFDMFRAME_P_EC1,
-                                    OFDMFRAME_P_EC2);
-      assert(packetizer_get_enc_msg_len(p_payload) == OFDMFRAME_P_ENC);
-      mod_payload = modem_create(OFDMFRAME_P_MOD);
+      memmove(&frame_struct, _frame_struct, sizeof(OFDMFRAME_STRUCT));
+
+      p_header = packetizer_create(frame_struct.H_LEN,
+                                   frame_struct.H_CRC,
+                                   frame_struct.H_EC1,
+                                   frame_struct.H_EC2);
+      mod_header = modem_create(frame_struct.H_MOD);
+
+      header_bps = modem_get_bps(mod_header);
+      header_enc_len = packetizer_get_enc_msg_len(p_header);
+      header_mod_len = (unsigned int) ceil 
+        (float(header_enc_len*8)/float(header_bps));
+
+      header_d = (unsigned char *) malloc 
+        (frame_struct.H_LEN*sizeof(unsigned char));
+      header_e = (unsigned char *) malloc 
+        (header_enc_len*sizeof(unsigned char));
+      header_m = (unsigned char *) malloc 
+        (header_mod_len*sizeof(unsigned char));
+
+      p_payload = packetizer_create(frame_struct.P_LEN,
+                                    frame_struct.P_CRC,
+                                    frame_struct.P_EC1,
+                                    frame_struct.P_EC2);
+      mod_payload = modem_create(frame_struct.P_MOD);
+
+      payload_bps = modem_get_bps(mod_payload);
+      payload_enc_len = packetizer_get_enc_msg_len(p_payload);
+      payload_mod_len = (unsigned int) ceil 
+        (float(payload_enc_len*8)/float(payload_bps));
+
+      payload_e = (unsigned char *) malloc 
+        (payload_enc_len*sizeof(unsigned char));
+      payload_m = (unsigned char *) malloc 
+        (payload_mod_len*sizeof(unsigned char));
     
-      div_t d = div(OFDMFRAME_H_SYM, M_data);
+      div_t d = div(header_mod_len, M_data);
       num_header_symbols = d.quot + (d.rem ? 1 : 0);
-      d = div(OFDMFRAME_P_SYM, M_data);
+      d = div(payload_mod_len, M_data);
       num_payload_symbols = d.quot + (d.rem ? 1 : 0);
       frame_len = 2 + 1 + num_header_symbols + num_payload_symbols;
-      payload_dec_len = OFDMFRAME_P_LEN;
-      payload_enc_len = OFDMFRAME_P_ENC;
-      payload_mod_len = OFDMFRAME_P_SYM;
-      header_dec_len = OFDMFRAME_H_LEN;
-      header_enc_len = OFDMFRAME_H_ENC;
-      header_mod_len = OFDMFRAME_H_SYM;
+
+//      assert(header_enc_len == OFDMFRAME_H_ENC);
+//      assert(payload_enc_len == OFDMFRAME_P_ENC);
+//      assert(header_mod_len == OFDMFRAME_H_SYM);
+//      assert(payload_mod_len == OFDMFRAME_P_SYM);
       reset();
     }
     
@@ -89,6 +112,11 @@ namespace liquid {
       modem_destroy(mod_header);
       modem_destroy(mod_payload);
 
+      free(header_d);
+      free(header_e);
+      free(header_m);
+      free(payload_e);
+      free(payload_m);
       free(X);
       free(p);
     }
@@ -149,11 +177,6 @@ namespace liquid {
       reset();
     }
     
-    unsigned int modulator::get_header_dec_len()
-    {
-      return header_dec_len;
-    }
-    
     unsigned int modulator::get_header_enc_len()
     {
       return header_enc_len;
@@ -164,9 +187,14 @@ namespace liquid {
       return header_mod_len;
     }
     
+    unsigned int modulator::get_h_usr_len()
+    {
+      return frame_struct.H_USR;
+    }
+    
     unsigned int modulator::get_payload_dec_len()
     {
-      return payload_dec_len;
+      return frame_struct.P_LEN;
     }
     
     unsigned int modulator::get_payload_enc_len()
@@ -239,13 +267,32 @@ namespace liquid {
       return payload_symbol_index;
     }
 
+    void modulator::set_tx_gain(std::complex<float> _tx_gain)
+    {
+      tx_gain = _tx_gain;
+    }
+
+    std::complex<float> modulator::get_tx_gain()
+    {
+      return tx_gain;
+    }
+
     void modulator::assemble_output_samples(
             std::complex<float> * _buffer)
     {
       unsigned int frame_index = 0;
+      std::complex<float> * buffer = (std::complex<float> *) malloc
+        ((M + cp_len)*sizeof(std::complex<float>));
       assert(frame_assembled);
-      while(!write_symbol(_buffer + (M + cp_len)*frame_index))
+      while(!write_symbol(buffer)) {
+        volk_32fc_s32fc_multiply_32fc(
+                _buffer + (M + cp_len)*frame_index,
+                buffer,
+                tx_gain,
+                M + cp_len);
         frame_index++;
+      }
+      free(buffer);
     }
 
     int modulator::write_symbol(std::complex<float> * _buffer)
@@ -298,18 +345,17 @@ namespace liquid {
     void modulator::assemble_frame(unsigned char * _header,
                                    unsigned char * _payload)
     {
-      memmove(header_d, _header, OFDMFRAME_H_USR*sizeof(unsigned char));
+      memmove(header_d, _header, frame_struct.H_USR*sizeof(unsigned char));
       encode_header();
       modulate_header();
       packetizer_encode(p_payload, _payload, payload_e);
       memset(payload_m, 0x00, payload_mod_len);
-      unsigned int bps = modulation_types[OFDMFRAME_P_MOD].bps;
       unsigned int num_written;
       liquid_repack_bytes(payload_e,
                           8,
                           payload_enc_len,
                           payload_m,
-                          bps,
+                          payload_bps,
                           payload_mod_len,
                           &num_written);
       frame_assembled = 1;
@@ -321,39 +367,38 @@ namespace liquid {
     void modulator::encode_header()
     {
         // first 'n' bytes user data
-        unsigned int n = OFDMFRAME_H_USR;
+        unsigned int n = frame_struct.H_USR;
     
         // first byte is for expansion/version validation
-        header_d[n + 0] = OFDMFRAME_VERSN;
+        header_d[n + 0] = frame_struct.VERSN;
     
         // add payload length
-        header_d[n + 1] = (payload_dec_len >> 8) & 0xff;
-        header_d[n + 2] = (payload_dec_len     ) & 0xff;
+        header_d[n + 1] = (frame_struct.P_LEN >> 8) & 0xff;
+        header_d[n + 2] = (frame_struct.P_LEN     ) & 0xff;
     
         // add modulation scheme/depth (pack into single byte)
-        header_d[n + 3]  = OFDMFRAME_P_MOD;
+        header_d[n + 3]  = frame_struct.P_MOD;
     
         // add CRC, forward error-correction schemes
         //  CRC     : most-significant 3 bits of [n+4]
         //  fec0    : least-significant 5 bits of [n+4]
         //  fec1    : least-significant 5 bits of [n+5]
-        header_d[n + 4]  = (OFDMFRAME_P_CRC & 0x07) << 5;
-        header_d[n + 4] |= (OFDMFRAME_P_EC1) & 0x1f;
-        header_d[n + 5]  = (OFDMFRAME_P_EC2) & 0x1f;
+        header_d[n + 4]  = (frame_struct.P_CRC & 0x07) << 5;
+        header_d[n + 4] |= (frame_struct.P_EC1) & 0x1f;
+        header_d[n + 5]  = (frame_struct.P_EC2) & 0x1f;
     
         // run packet encoder
         packetizer_encode(p_header, header_d, header_e);
     
         // scramble header
-        scramble_data(header_e, OFDMFRAME_H_ENC);
+        scramble_data(header_e, header_enc_len);
     }
     
     void modulator::modulate_header()
     {
-      unsigned int bps = modulation_types[OFDMFRAME_H_MOD].bps;
       unsigned int num_written;
-      liquid_repack_bytes(header_e, 8, OFDMFRAME_H_ENC,
-                          header_m, bps, OFDMFRAME_H_SYM,
+      liquid_repack_bytes(header_e, 8, header_enc_len,
+                          header_m, header_bps, header_mod_len,
                           &num_written);
     }
     
@@ -410,7 +455,7 @@ namespace liquid {
       for (i = 0; i < M; i++) {
         sctype = p[i];
         if (sctype == OFDMFRAME_SCTYPE_DATA) {
-          if (header_symbol_index < OFDMFRAME_H_SYM) {
+          if (header_symbol_index < header_mod_len) {
             modem_modulate(mod_header,
                            header_m[header_symbol_index++],
                            X + i);
@@ -484,7 +529,7 @@ namespace liquid {
       printf("    frame assembled     :   %s\n", frame_assembled ? "yes" : "no");
       if (1) {
         printf("    payload:\n");
-        printf("      * decoded bytes   :   %-u\n", payload_dec_len);
+        printf("      * decoded bytes   :   %-u\n", frame_struct.P_LEN);
         printf("      * encoded bytes   :   %-u\n", payload_enc_len);
         printf("      * modulated syms  :   %-u\n", payload_mod_len);
         printf("    total OFDM symbols  :   %-u\n", frame_len);
@@ -494,7 +539,7 @@ namespace liquid {
         printf("      * payload symbols :   %-u @ %u\n", num_payload_symbols, M + cp_len);
     
         // compute asymptotic spectral efficiency
-        unsigned int num_bits = 8*payload_dec_len;
+        unsigned int num_bits = 8*frame_struct.P_LEN;
         unsigned int num_samples = (M + cp_len)*(3 + num_header_symbols + num_payload_symbols);
         printf("    spectral efficiency :   %-6.4f b/s/Hz\n", (float)num_bits / (float)num_samples);
       }

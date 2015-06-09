@@ -26,25 +26,26 @@
 #include <iostream>
 #include <fftw3.h>
 #include <assert.h>
+#include <volk/volk.h>
 
-#define OFDMFRAME_VERSN   (104)
-#define OFDMFRAME_H_USR   (8)
-#define OFDMFRAME_H_LEN   (14)
-#define OFDMFRAME_H_CRC   (LIQUID_CRC_32)
-#define OFDMFRAME_H_EC1   (LIQUID_FEC_GOLAY2412)
-#define OFDMFRAME_H_EC2   (LIQUID_FEC_NONE)
-#define OFDMFRAME_H_ENC   (36)
-#define OFDMFRAME_H_MOD   (LIQUID_MODEM_BPSK)
-#define OFDMFRAME_H_BPS   (1)
-#define OFDMFRAME_H_SYM   (288)
-#define OFDMFRAME_P_LEN   (1024)
-#define OFDMFRAME_P_CRC   (LIQUID_CRC_NONE)
-#define OFDMFRAME_P_EC1   (LIQUID_FEC_NONE)
-#define OFDMFRAME_P_EC2   (LIQUID_FEC_NONE)
-#define OFDMFRAME_P_ENC   (1024)                // FIXME
-#define OFDMFRAME_P_MOD   (LIQUID_MODEM_QPSK)
-#define OFDMFRAME_P_BPS   (2)
-#define OFDMFRAME_P_SYM   (4096)
+//#define OFDMFRAME_VERSN   (104)
+//#define OFDMFRAME_H_USR   (8)
+//#define OFDMFRAME_H_LEN   (14)
+//#define OFDMFRAME_H_CRC   (LIQUID_CRC_32)
+//#define OFDMFRAME_H_EC1   (LIQUID_FEC_GOLAY2412)
+//#define OFDMFRAME_H_EC2   (LIQUID_FEC_NONE)
+//#define OFDMFRAME_H_ENC   (36)
+//#define OFDMFRAME_H_MOD   (LIQUID_MODEM_BPSK)
+//#define OFDMFRAME_H_BPS   (1)
+//#define OFDMFRAME_H_SYM   (288)
+//#define OFDMFRAME_P_LEN   (512)
+//#define OFDMFRAME_P_CRC   (LIQUID_CRC_NONE)
+//#define OFDMFRAME_P_EC1   (LIQUID_FEC_NONE)
+//#define OFDMFRAME_P_EC2   (LIQUID_FEC_NONE)
+//#define OFDMFRAME_P_ENC   (512)                // FIXME
+//#define OFDMFRAME_P_MOD   (LIQUID_MODEM_QPSK)
+//#define OFDMFRAME_P_BPS   (2)
+//#define OFDMFRAME_P_SYM   (2048)
 
 typedef enum {RX_STATE_HDR = 0,  // receive header
               RX_STATE_PLD       // receive payload
@@ -55,6 +56,21 @@ typedef enum {TX_STATE_S0A = 0,    // write S0 symbol (first)
               TX_STATE_HDR,        // write header symbols
               TX_STATE_PLD         // write payload symbols
              } tx_states;
+
+typedef struct {
+  unsigned int      VERSN;        // frame structure version
+  unsigned int      H_USR;        // user modifiable header bytes
+  unsigned int      H_LEN;        // total length of header
+  fec_scheme        H_EC1;        // first error correction for header
+  fec_scheme        H_EC2;        // second error correction for header
+  crc_scheme        H_CRC;        // header crc
+  modulation_scheme H_MOD;        // header modulation scheme
+  unsigned int      P_LEN;        // length of payload
+  fec_scheme        P_EC1;        // first error correction for paylaod
+  fec_scheme        P_EC2;        // second error correction for payload
+  crc_scheme        P_CRC;        // payload crc
+  modulation_scheme P_MOD;        // payload modulation scheme
+} OFDMFRAME_STRUCT;
 
 namespace liquid {
   namespace ofdm {
@@ -73,43 +89,47 @@ namespace liquid {
         unsigned int M_S1;                // number of S1 subcarriers
     
         std::complex<float> * X;          // frequency-domain buffer
-        unsigned int num_header_symbols;  // number of header OFDM symbols
-        unsigned int num_payload_symbols; // number of payload OFDM symbols
-        unsigned int frame_len;           // length of the frame(# OFDM Symbols)
+        std::complex<float> tx_gain;      // DSP gain
+
+        OFDMFRAME_STRUCT frame_struct;
     
         modem mod_header;                         // header modulator
         packetizer p_header;                      // header packetizer
-        unsigned int header_dec_len;              // header length
         unsigned int header_enc_len;              // header length encoded
         unsigned int header_mod_len;              // header mod length
-        unsigned char header_d[OFDMFRAME_H_LEN];  // header data
-        unsigned char header_e[OFDMFRAME_H_ENC];  // header encoded
-        unsigned char header_m[OFDMFRAME_H_SYM];  // header symbols
+        unsigned int header_bps;                  // header bits per symbol
+        unsigned char * header_d;  // header data
+        unsigned char * header_e;  // header encoded
+        unsigned char * header_m;  // header symbols
     
         modem mod_payload;                        // payload modulator
         packetizer p_payload;                     // payload packetizer
-        unsigned int payload_dec_len;             // payload length
         unsigned int payload_enc_len;             // payload length encoded
         unsigned int payload_mod_len;             // payload mod length
-        unsigned char payload_e[OFDMFRAME_P_ENC]; // encoded bytes
-        unsigned char payload_m[OFDMFRAME_P_SYM]; // encoded bytes
+        unsigned int payload_bps;                 // payload bits per symbol
+        unsigned char * payload_e; // encoded bytes
+        unsigned char * payload_m; // encoded bytes
     
-        ofdmframegen fg;
-    
-        unsigned int symbol_number;               // symbol counter
 
-        tx_states state;
-        int frame_assembled;  // frame assembled flag
-        int frame_complete;   // frame completed flag
+        unsigned int num_header_symbols;  // number of header OFDM symbols
+        unsigned int num_payload_symbols; // number of payload OFDM symbols
+        unsigned int frame_len;           // length of the frame(# OFDM Symbols)
+        unsigned int symbol_number;       // symbol counter
         unsigned int header_symbol_index;
         unsigned int payload_symbol_index;
+        int frame_assembled;  // frame assembled flag
+        int frame_complete;   // frame completed flag
+        tx_states state;
+
+        ofdmframegen fg;
     
       public:
         // constructor - destructor
         modulator(unsigned int       _M,
                   unsigned int       _cp_len,
                   unsigned int       _taper_len,
-                  unsigned char *    _p);
+                  unsigned char *    _p,
+                  OFDMFRAME_STRUCT * _frame_struct);
         ~modulator();
     
         // get-set methods
@@ -121,6 +141,8 @@ namespace liquid {
         void set_taper_len(unsigned int _taper_len);
         unsigned char * get_p();
         void set_p(unsigned char * _p);
+        void set_tx_gain(std::complex<float> _tx_gain);
+        std::complex<float> get_tx_gain();
         void print_p();
         unsigned int get_M_null();
         unsigned int get_M_pilot();
@@ -132,6 +154,7 @@ namespace liquid {
         unsigned int get_payload_dec_len();
         unsigned int get_payload_enc_len();
         unsigned int get_payload_mod_len();
+        unsigned int get_h_usr_len();
         unsigned int get_header_dec_len();
         unsigned int get_header_enc_len();
         unsigned int get_header_mod_len();
@@ -173,27 +196,37 @@ namespace liquid {
         unsigned int M_S0;                // number of S0 subcarriers
         unsigned int M_S1;                // number of S1 subcarriers
     
-        unsigned int num_header_symbols;  // number of header OFDM symbols
-        unsigned int num_payload_symbols; // number of payload OFDM symbols
-        unsigned int frame_len;           // length of the frame(# OFDM Symbols)
+        OFDMFRAME_STRUCT frame_struct;
     
         modem mod_header;                         // header modulator
         packetizer p_header;                      // header packetizer
-        unsigned int header_dec_len;              // header length
         unsigned int header_enc_len;              // header length encoded
         unsigned int header_mod_len;              // header mod length
-        unsigned char header_d[OFDMFRAME_H_LEN];  // header data
-        unsigned char header_e[OFDMFRAME_H_ENC];  // header encoded
-        unsigned char header_m[OFDMFRAME_H_SYM];  // header symbols
+        unsigned int header_bps;                  // header bits per symbol
+        unsigned char * header_d;  // header data
+        unsigned char * header_e;  // header encoded
+        unsigned char * header_m;  // header symbols
     
         modem mod_payload;                        // payload modulator
         packetizer p_payload;                     // payload packetizer
-        unsigned int payload_dec_len;             // payload length
         unsigned int payload_enc_len;             // payload length encoded
         unsigned int payload_mod_len;             // payload mod length
-        unsigned char payload_d[OFDMFRAME_P_LEN]; // encoded bytes
-        unsigned char payload_e[OFDMFRAME_P_ENC]; // encoded bytes
-        unsigned char payload_m[OFDMFRAME_P_SYM]; // encoded bytes
+        unsigned int payload_bps;                 // payload bits per symbol
+        unsigned char * payload_d; // encoded bytes
+        unsigned char * payload_e; // encoded bytes
+        unsigned char * payload_m; // encoded bytes
+    
+
+        unsigned int num_header_symbols;  // number of header OFDM symbols
+        unsigned int num_payload_symbols; // number of payload OFDM symbols
+        unsigned int frame_len;           // length of the frame(# OFDM Symbols)
+        unsigned int symbol_number;       // symbol counter
+        unsigned int header_symbol_index;
+        unsigned int payload_symbol_index;
+        unsigned int payload_buffer_index;
+        rx_states state;
+        int header_valid;
+        int payload_valid;
 
         ofdmframesync fs;                   // frame synchronizer object
         framesync_callback callback;    // callback
@@ -201,21 +234,14 @@ namespace liquid {
         void * userdata;
         float evm_hat;                      // average error vector magnitude
 
-        unsigned int symbol_number;   // symbol counter
-        rx_states state;
-        int header_valid;
-        int payload_valid;
-        unsigned int header_symbol_index;
-        unsigned int payload_symbol_index;
-        unsigned int payload_buffer_index;
-
       public:
         demodulator(unsigned int            _M,
                     unsigned int            _cp_len,
                     unsigned int            _taper_len,
                     unsigned char *         _p,
                     framesync_callback      _callback,
-                    void *                  _userdata);
+                    void *                  _userdata,
+                    OFDMFRAME_STRUCT *      _frame_struct);
     
         // destructor
         ~demodulator();
@@ -237,7 +263,6 @@ namespace liquid {
         unsigned int get_M_S1();
         unsigned int get_num_header_symbols();
         unsigned int get_num_payload_symbols();
-        unsigned int get_payload_dec_len();
         unsigned int get_payload_enc_len();
         unsigned int get_payload_mod_len();
         unsigned int get_header_dec_len();
