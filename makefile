@@ -12,10 +12,12 @@ RM				:= rm -f
 
 # flags
 INCLUDE_CFLAGS	= -I./ -I./include/ -I/target/include/ -I/target/include/volk
+INCLUDR_CFLAGS += -I/usr/include/qt4
 CONFIG_CFLAGS		= -g -O2 -march=core2
-CFLAGS					+= $(INCLUDE_CFLAGS) -Wall -fPIC $(CONFIG_CFLAGS)
+CFLAGS				 += $(INCLUDE_CFLAGS) -Wall -fPIC $(CONFIG_CFLAGS)
 LDFLAGS					= -L/target/lib -L/target/lib64
-LDFLAGS					+= -lm -lc -lliquid -lvolk
+LDFLAGS				 += -lm -lc -lliquid -lvolk
+LDFLAGS				 += 	-lQtGui -lQtCore
 ARFLAGS					= r
 
 library_src		:=							\
